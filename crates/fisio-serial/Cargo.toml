@@ -1,0 +1,12 @@
+[package]
+name = "fisio-serial"
+version = "0.1.0"
+edition = "2021"
+description = "Comunicación serial para dispositivos médicos"
+
+[dependencies]
+fisio-core = { path = "../fisio-core" }
+tokio-serial = "5.4"
+serialport = "4.2"
+tokio.workspace = true
+log.workspace = true

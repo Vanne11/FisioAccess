@@ -1,0 +1,12 @@
+[package]
+name = "fisio-core"
+version = "0.1.0"
+edition = "2021"
+description = "Tipos, traits y utilidades compartidas para FisioAcces"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+async-trait = "0.1"

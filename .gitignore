@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+
+# Rust build output
+target/
+**/target/
+
+# Build outputs
+dist/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Tauri build artifacts
+src-tauri/**/*.dll
+src-tauri/**/*.exe
+src-tauri/**/*.app
+src-tauri/**/*.deb
+src-tauri/**/*.rpm
+src-tauri/**/*.AppImage
+src-tauri/**/*.dmg
+src-tauri/**/*.msi
+
+# Tauri generated schema (auto-generated, can be regenerated)
+src-tauri/gen/
+
+# Rust backup files
+**/*.rs.bk
+
+# Test coverage
+coverage/
+*.lcov
+
+# Temporary files
+tmp/
+temp/

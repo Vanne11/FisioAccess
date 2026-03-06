@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fisio-core",
+    "crates/fisio-serial",
+    "crates/fisio-filters",
+    "crates/fisio-ecg",
+    "crates/fisio-emg",
+    "crates/fisio-spiro",
+    "crates/fisio-data",
+    "crates/fisio-http",
+]
+exclude = ["src-tauri"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+thiserror = "1.0"
+log = "0.4"
+chrono = { version = "0.4", features = ["serde"] }

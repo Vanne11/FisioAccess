@@ -1,0 +1,12 @@
+[package]
+name = "fisio-spiro"
+version = "0.1.0"
+edition = "2021"
+description = "Módulo de procesamiento de espirómetro"
+
+[dependencies]
+fisio-core = { path = "../fisio-core" }
+fisio-serial = { path = "../fisio-serial" }
+tokio.workspace = true
+serde.workspace = true
+log.workspace = true

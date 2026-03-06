@@ -1,0 +1,11 @@
+[package]
+name = "fisio-data"
+version = "0.1.0"
+edition = "2021"
+description = "Grabación y exportación de datos médicos"
+
+[dependencies]
+fisio-core = { path = "../fisio-core" }
+csv = "1.3"
+tokio.workspace = true
+chrono.workspace = true

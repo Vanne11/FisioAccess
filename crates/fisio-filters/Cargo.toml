@@ -1,0 +1,9 @@
+[package]
+name = "fisio-filters"
+version = "0.1.0"
+edition = "2021"
+description = "Biblioteca de filtros digitales para procesamiento de señales"
+
+[dependencies]
+fisio-core = { path = "../fisio-core" }
+ndarray = "0.15"

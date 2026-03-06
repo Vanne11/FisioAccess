@@ -1,0 +1,12 @@
+[package]
+name = "fisio-http"
+version = "0.1.0"
+edition = "2021"
+description = "Transmisión HTTP y WebSocket para datos médicos"
+
+[dependencies]
+fisio-core = { path = "../fisio-core" }
+reqwest = { version = "0.11", features = ["json"] }
+tungstenite = "0.20"
+tokio.workspace = true
+serde.workspace = true
