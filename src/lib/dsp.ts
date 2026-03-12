@@ -59,11 +59,10 @@ export function notch(fc: number, fs: number, Q = 30): BiquadCoeffs {
   };
 }
 
-/** Aplica un filtro biquad a un array de valores */
-export function applyBiquad(values: number[], coeffs: BiquadCoeffs): number[] {
+/** Aplica un filtro biquad in-place (modifica el array de entrada) */
+export function applyBiquadInPlace(values: number[], coeffs: BiquadCoeffs): void {
   const { b0, b1, b2, a1, a2 } = coeffs;
   const n = values.length;
-  const out = new Float64Array(n);
   let x1 = 0,
     x2 = 0,
     y1 = 0,
@@ -72,14 +71,19 @@ export function applyBiquad(values: number[], coeffs: BiquadCoeffs): number[] {
   for (let i = 0; i < n; i++) {
     const x = values[i];
     const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-    out[i] = y;
+    values[i] = y;
     x2 = x1;
     x1 = x;
     y2 = y1;
     y1 = y;
   }
+}
 
-  return Array.from(out);
+/** Aplica un filtro biquad a un array de valores (crea nuevo array) */
+export function applyBiquad(values: number[], coeffs: BiquadCoeffs): number[] {
+  const out = values.slice();
+  applyBiquadInPlace(out, coeffs);
+  return out;
 }
 
 export interface FilterConfig {
@@ -115,24 +119,25 @@ export function estimateSampleRate(
 /**
  * Aplica la cadena de filtros configurada a los valores crudos.
  * El orden es: HP → Notch → LP (clinicamente estandar).
+ * Opera sobre una copia unica (1 alloc en vez de 3).
  */
 export function applyFilterChain(
   values: number[],
   fs: number,
   config: FilterConfig,
 ): number[] {
-  let out = values;
+  const out = values.slice(); // unica copia
 
   if (config.highpassEnabled) {
-    out = applyBiquad(out, highpass(config.highpassFreq, fs));
+    applyBiquadInPlace(out, highpass(config.highpassFreq, fs));
   }
 
   if (config.notchEnabled) {
-    out = applyBiquad(out, notch(config.notchFreq, fs));
+    applyBiquadInPlace(out, notch(config.notchFreq, fs));
   }
 
   if (config.lowpassEnabled) {
-    out = applyBiquad(out, lowpass(config.lowpassFreq, fs));
+    applyBiquadInPlace(out, lowpass(config.lowpassFreq, fs));
   }
 
   return out;

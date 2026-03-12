@@ -11,6 +11,7 @@ import {
   Snowflake,
   Download,
   Trash2,
+  FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardContent } from "@/components/ui/Card";
@@ -37,6 +38,7 @@ import {
   detectQRSComplexes,
 } from "@/lib/markers";
 import { exportECGAsPNG } from "@/lib/export";
+import { ReportPreview, type ReportData, captureCanvas } from "@/components/shared/ReportPreview";
 import { SampleRateDetector } from "@/utils/sampleRateDetector";
 import { detectADCType, calibrateFrom1mV, toMillivolts, adcToMvScale } from "@/utils/signalCalibrator";
 import {
@@ -46,7 +48,8 @@ import {
 
 const SWEEP_OPTIONS = [12.5, 25, 50] as const;
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8] as const;
-const BUFFER_SIZE = 50000;
+// 12000 muestras ≈ 60s a 200Hz. Suficiente para display + scrollback.
+const BUFFER_SIZE = 12000;
 
 export function ECGMonitor() {
   const serial = useSerial(115200, BUFFER_SIZE);
@@ -115,9 +118,32 @@ export function ECGMonitor() {
     }
   }, [serial.data, filterConfig, sampleRate, calibration]);
 
-  // --- R-peaks y BPM ---
-  const rPeaks = useMemo(() => detectRPeaks(filteredData), [filteredData]);
-  const bpm = useMemo(() => calculateBPM(rPeaks), [rPeaks]);
+  // --- R-peaks y BPM (throttled ~2Hz para no matar el CPU) ---
+  const [rPeaks, setRPeaks] = useState<ReturnType<typeof detectRPeaks>>([]);
+  const [calculatedBpm, setCalculatedBpm] = useState(0);
+  const peakTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (frozen || !serial.recording) {
+      // Calcular una vez cuando se congela
+      const peaks = detectRPeaks(filteredData);
+      setRPeaks(peaks);
+      setCalculatedBpm(calculateBPM(peaks));
+      return;
+    }
+    // En vivo: recalcular cada 500ms
+    peakTimerRef.current = setInterval(() => {
+      const peaks = detectRPeaks(filteredData);
+      setRPeaks(peaks);
+      setCalculatedBpm(calculateBPM(peaks));
+    }, 500);
+    return () => {
+      if (peakTimerRef.current) clearInterval(peakTimerRef.current);
+    };
+  }, [filteredData, frozen, serial.recording]);
+
+  // Priorizar BPM del firmware (tiempo real), fallback al calculado en frontend
+  const bpm = serial.firmwareBpm > 0 ? serial.firmwareBpm : calculatedBpm;
 
   // --- Complejos QRS ---
   const qrsComplexes = useMemo(() => detectQRSComplexes(markers), [markers]);
@@ -259,6 +285,39 @@ export function ECGMonitor() {
     : 0;
   const totalMin = Math.floor(totalSeconds / 60);
   const totalSec = Math.floor(totalSeconds % 60);
+
+  // --- Vista previa informe ---
+  const [reportOpen, setReportOpen] = useState(false);
+  const ecgCanvasRef = useRef<HTMLDivElement>(null);
+  const [signalImage, setSignalImage] = useState("");
+
+  const handleOpenReport = useCallback(() => {
+    setSignalImage(captureCanvas(ecgCanvasRef.current));
+    setReportOpen(true);
+  }, []);
+
+  const ecgReport: ReportData = useMemo(() => ({
+    title: "Electrocardiograma",
+    accent: "#ef4444",
+    fields: [
+      { label: "Frecuencia cardiaca", value: bpm > 0 ? bpm.toFixed(0) : "—", unit: "BPM" },
+      { label: "Duracion del registro", value: totalSeconds > 0 ? `${totalMin}:${totalSec.toString().padStart(2, "0")}` : "—", unit: "min:seg" },
+      { label: "Muestras", value: serial.data.length.toString() },
+      { label: "Frecuencia de muestreo", value: sampleRate > 0 ? sampleRate.toFixed(0) : "—", unit: "Hz" },
+      { label: "Velocidad de barrido", value: sweepSpeed.toString(), unit: "mm/s" },
+      ...(qrsComplexes.length > 0
+        ? [{ label: "Complejos QRS detectados", value: qrsComplexes.length.toString() }]
+        : []),
+      ...(qrsComplexes.length > 0
+        ? [{ label: "Duracion QRS promedio", value: (qrsComplexes.reduce((s, q) => s + q.durationMs, 0) / qrsComplexes.length).toFixed(1), unit: "ms" }]
+        : []),
+      ...(filterConfig.notchEnabled ? [{ label: "Filtro Notch", value: `${filterConfig.notchFreq} Hz` }] : []),
+      ...(filterConfig.highpassEnabled ? [{ label: "Filtro pasa-altos", value: `${filterConfig.highpassFreq} Hz` }] : []),
+      ...(filterConfig.lowpassEnabled ? [{ label: "Filtro pasa-bajos", value: `${filterConfig.lowpassFreq} Hz` }] : []),
+    ],
+    signalImage,
+    signalLabel: "Trazado ECG",
+  }), [bpm, totalSeconds, totalMin, totalSec, serial.data.length, sampleRate, sweepSpeed, qrsComplexes, filterConfig, signalImage]);
   const statusText = !serial.isConnected
     ? "Desconectado"
     : serial.recording && !frozen
@@ -351,20 +410,22 @@ export function ECGMonitor() {
             </div>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col min-h-0">
-            <ECGCanvas
-              data={filteredData}
-              sweepSpeed={sweepSpeed}
-              frozen={frozen || !serial.recording}
-              zoom={zoom}
-              markers={markers}
-              qrsComplexes={qrsComplexes}
-              rPeaks={rPeaks}
-              activeTool={activeTool}
-              onCanvasClick={handleCanvasClick}
-              calibration={calibration}
-              sampleRate={sampleRate}
-              className="flex-1 min-h-0"
-            />
+            <div ref={ecgCanvasRef} className="flex-1 min-h-0">
+              <ECGCanvas
+                data={filteredData}
+                sweepSpeed={sweepSpeed}
+                frozen={frozen || !serial.recording}
+                zoom={zoom}
+                markers={markers}
+                qrsComplexes={qrsComplexes}
+                rPeaks={rPeaks}
+                activeTool={activeTool}
+                onCanvasClick={handleCanvasClick}
+                calibration={calibration}
+                sampleRate={sampleRate}
+                className="h-full"
+              />
+            </div>
             {(frozen || !serial.recording) && serial.data.length > 0 && (
               <p className="text-xs text-secondary mt-1 text-center">
                 {activeTool ? `Herramienta: ${activeTool} — click para marcar` : "Rueda o arrastra para navegar"}
@@ -502,11 +563,24 @@ export function ECGMonitor() {
                 {exporting && (
                   <p className="text-[10px] text-ecg-400 text-center">Exportando...</p>
                 )}
+
+                <div className="h-px bg-surface-600" />
+
+                <button
+                  onClick={handleOpenReport}
+                  disabled={filteredData.length < 2}
+                  className="flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-30 transition-colors"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  Vista previa informe
+                </button>
               </div>
             </CardContent>
           </Card>
         </div>
       </div>
+
+      <ReportPreview open={reportOpen} onClose={() => setReportOpen(false)} report={ecgReport} />
     </div>
   );
 }

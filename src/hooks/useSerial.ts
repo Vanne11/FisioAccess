@@ -17,6 +17,9 @@ export interface DataPoint {
   value: number;
 }
 
+/** Intervalo de flush al state (ms). 20Hz es suficiente para UI fluida. */
+const FLUSH_INTERVAL = 50;
+
 export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
   const [ports, setPorts] = useState<string[]>([]);
   const [selectedPort, setSelectedPort] = useState("");
@@ -24,16 +27,45 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<DataPoint[]>([]);
+  const [firmwareBpm, setFirmwareBpm] = useState<number>(0);
   const unlistenRefs = useRef<UnlistenFn[]>([]);
   const recordingRef = useRef(false);
+
+  // --- Batching: acumular muestras en ref, flush periodico al state ---
+  const pendingRef = useRef<DataPoint[]>([]);
+  const bufferRef = useRef<DataPoint[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startFlush = useCallback(() => {
+    if (flushTimerRef.current) return;
+    flushTimerRef.current = setInterval(() => {
+      const batch = pendingRef.current;
+      if (batch.length === 0) return;
+      pendingRef.current = [];
+
+      // Push al buffer interno y truncar si excede
+      const buf = bufferRef.current;
+      for (let i = 0; i < batch.length; i++) buf.push(batch[i]);
+      if (buf.length > bufferSize) {
+        bufferRef.current = buf.slice(buf.length - bufferSize);
+      }
+
+      // Publicar snapshot inmutable al state (1 copia cada 50ms, no 200/seg)
+      setData(bufferRef.current.slice());
+    }, FLUSH_INTERVAL);
+  }, [bufferSize]);
+
+  const stopFlush = useCallback(() => {
+    if (flushTimerRef.current) {
+      clearInterval(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+  }, []);
 
   const startListening = useCallback(async () => {
     const u1 = await listen<DataPoint>("serial-data", (event) => {
       if (!recordingRef.current) return;
-      setData((prev) => {
-        const next = [...prev, event.payload];
-        return next.length > bufferSize ? next.slice(-bufferSize) : next;
-      });
+      pendingRef.current.push(event.payload);
     });
 
     const u2 = await listen<string>("serial-error", (event) => {
@@ -44,15 +76,22 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
       setIsConnected(false);
       recordingRef.current = false;
       setRecording(false);
+      stopFlush();
     });
 
-    unlistenRefs.current = [u1, u2, u3];
-  }, [bufferSize]);
+    const u4 = await listen<number>("serial-bpm", (event) => {
+      if (!recordingRef.current) return;
+      setFirmwareBpm(event.payload);
+    });
+
+    unlistenRefs.current = [u1, u2, u3, u4];
+  }, [stopFlush]);
 
   const stopListening = useCallback(() => {
     unlistenRefs.current.forEach((fn) => fn());
     unlistenRefs.current = [];
-  }, []);
+    stopFlush();
+  }, [stopFlush]);
 
   const refreshPorts = useCallback(async () => {
     setError(null);
@@ -94,6 +133,7 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
     setError(null);
     recordingRef.current = false;
     setRecording(false);
+    stopFlush();
     try {
       await invoke<ConnectionStatus>("serial_disconnect");
       setIsConnected(false);
@@ -101,28 +141,45 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
       setError(String(e));
     }
     stopListening();
-  }, [stopListening]);
+  }, [stopListening, stopFlush]);
 
   // Empieza a acumular datos en el buffer
   const startRecording = useCallback(() => {
     recordingRef.current = true;
     setRecording(true);
-  }, []);
+    startFlush();
+  }, [startFlush]);
 
   // Deja de acumular datos (el puerto sigue abierto)
   const stopRecording = useCallback(() => {
     recordingRef.current = false;
     setRecording(false);
-  }, []);
+    stopFlush();
+    // Flush final de lo que quede pendiente
+    if (pendingRef.current.length > 0) {
+      const buf = bufferRef.current;
+      for (const p of pendingRef.current) buf.push(p);
+      pendingRef.current = [];
+      if (buf.length > bufferSize) {
+        bufferRef.current = buf.slice(buf.length - bufferSize);
+      }
+      setData(bufferRef.current.slice());
+    }
+  }, [stopFlush, bufferSize]);
 
   const clearData = useCallback(() => {
+    pendingRef.current = [];
+    bufferRef.current = [];
     setData([]);
   }, []);
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => stopListening();
-  }, [stopListening]);
+    return () => {
+      stopListening();
+      stopFlush();
+    };
+  }, [stopListening, stopFlush]);
 
   return {
     ports,
@@ -132,6 +189,7 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
     recording,
     error,
     data,
+    firmwareBpm,
     refreshPorts,
     connect,
     disconnect,

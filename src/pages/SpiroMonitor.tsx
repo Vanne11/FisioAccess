@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { Wind, Trash2 } from "lucide-react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { Wind, Trash2, FileText } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardContent } from "@/components/ui/Card";
 import { SerialSelect } from "@/components/shared/SerialSelect";
@@ -7,6 +7,7 @@ import { SignalChart } from "@/components/shared/SignalChart";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useSerial, type DataPoint } from "@/hooks/useSerial";
+import { ReportPreview, type ReportData, captureSVG } from "@/components/shared/ReportPreview";
 
 interface TestResult {
   id: number;
@@ -88,6 +89,42 @@ export function SpiroMonitor() {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
+
+  // --- Vista previa informe ---
+  const [reportOpen, setReportOpen] = useState(false);
+  const spiroChartRef = useRef<HTMLDivElement>(null);
+  const [signalImage, setSignalImage] = useState("");
+
+  const handleOpenReport = useCallback(async () => {
+    const img = await captureSVG(spiroChartRef.current);
+    setSignalImage(img);
+    setReportOpen(true);
+  }, []);
+
+  const spiroReport: ReportData = useMemo(() => {
+    const bestPEF = tests.length > 0 ? Math.max(...tests.map((t) => t.peakFlow)) : 0;
+    const avgPEF = tests.length > 0 ? tests.reduce((s, t) => s + t.peakFlow, 0) / tests.length : 0;
+    return {
+      title: "Espirometria",
+      accent: "#8b5cf6",
+      fields: [
+        { label: "Numero de pruebas", value: tests.length.toString() },
+        ...(tests.length > 0
+          ? [
+              { label: "Mejor PEF", value: bestPEF.toFixed(1), unit: "L/s" },
+              { label: "PEF promedio", value: avgPEF.toFixed(1), unit: "L/s" },
+            ]
+          : []),
+        ...tests.map((t) => ({
+          label: `${t.name} — Duracion`,
+          value: `${t.duration}s | PEF: ${t.peakFlow.toFixed(1)}`,
+          unit: "L/s",
+        })),
+      ],
+      signalImage,
+      signalLabel: "Curva flujo-volumen",
+    };
+  }, [tests, signalImage]);
 
   const getStatus = () => {
     if (isTesting) return "testing" as const;
@@ -173,7 +210,9 @@ export function SpiroMonitor() {
             : "Curvas de flujo-volumen"}
         </CardHeader>
         <CardContent>
-          <SignalChart data={serial.data} color="var(--color-spiro)" height={280} />
+          <div ref={spiroChartRef}>
+            <SignalChart data={serial.data} color="var(--color-spiro)" height={280} />
+          </div>
         </CardContent>
       </Card>
 
@@ -214,6 +253,19 @@ export function SpiroMonitor() {
           )}
         </CardContent>
       </Card>
+
+      <div className="flex justify-end mt-4">
+        <button
+          onClick={handleOpenReport}
+          disabled={tests.length === 0}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 disabled:opacity-30 transition-colors"
+        >
+          <FileText className="h-3.5 w-3.5" />
+          Vista previa informe
+        </button>
+      </div>
+
+      <ReportPreview open={reportOpen} onClose={() => setReportOpen(false)} report={spiroReport} />
     </div>
   );
 }

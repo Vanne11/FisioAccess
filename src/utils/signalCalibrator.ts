@@ -112,6 +112,18 @@ export function toMillivolts(rawValue: number, config: CalibrationConfig): numbe
 }
 
 /**
+ * Factor de escala para convertir valores ADC a mV (sin restar offset).
+ * Usar con datos ya filtrados (el filtro HP remueve el DC).
+ *
+ *   mV = raw * adcToMvScale(config)
+ */
+export function adcToMvScale(config: CalibrationConfig): number {
+  if (config.adcBits === 0) return config.calibrationFactor;
+  const adcMax = (1 << config.adcBits) - 1;
+  return (config.vRef / adcMax / config.hwGain) * 1000 * config.calibrationFactor;
+}
+
+/**
  * Calibra a partir de senal conocida de 1 mV.
  *
  * Mide el pico-a-pico de los datos y devuelve un calibrationFactor

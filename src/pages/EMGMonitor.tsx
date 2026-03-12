@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { BicepsFlexed } from "lucide-react";
+import { useState, useMemo, useRef, useCallback } from "react";
+import { BicepsFlexed, FileText } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardContent } from "@/components/ui/Card";
 import { SerialSelect } from "@/components/shared/SerialSelect";
@@ -7,6 +7,7 @@ import { SignalChart } from "@/components/shared/SignalChart";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useSerial } from "@/hooks/useSerial";
+import { ReportPreview, type ReportData, captureSVG } from "@/components/shared/ReportPreview";
 
 export function EMGMonitor() {
   const serial = useSerial(115200, 500);
@@ -49,6 +50,30 @@ export function EMGMonitor() {
     recent.length > 0
       ? Math.max(...recent.map((d) => Math.abs(d.value)))
       : null;
+
+  // --- Vista previa informe ---
+  const [reportOpen, setReportOpen] = useState(false);
+  const emgChartRef = useRef<HTMLDivElement>(null);
+  const [signalImage, setSignalImage] = useState("");
+
+  const handleOpenReport = useCallback(async () => {
+    const img = await captureSVG(emgChartRef.current);
+    setSignalImage(img);
+    setReportOpen(true);
+  }, []);
+
+  const emgReport: ReportData = useMemo(() => ({
+    title: "Electromiograma",
+    accent: "#f59e0b",
+    fields: [
+      { label: "RMS", value: rms !== null ? rms.toFixed(1) : "—", unit: "uV" },
+      { label: "Amplitud pico", value: peak !== null ? peak.toFixed(0) : "—", unit: "uV" },
+      { label: "Muestras", value: serial.data.length.toString() },
+      { label: "Calibracion", value: isCalibrated ? "Calibrado" : "Sin calibrar" },
+    ],
+    signalImage,
+    signalLabel: "Potencial muscular EMG",
+  }), [rms, peak, serial.data.length, isCalibrated, signalImage]);
 
   const getStatus = () => {
     if (!serial.isConnected) return "disconnected" as const;
@@ -142,12 +167,27 @@ export function EMGMonitor() {
         </Card>
       </div>
 
-      <Card>
+      <Card className="mb-4">
         <CardHeader>Potencial Muscular EMG</CardHeader>
         <CardContent>
-          <SignalChart data={serial.data} color="var(--color-emg)" height={300} />
+          <div ref={emgChartRef}>
+            <SignalChart data={serial.data} color="var(--color-emg)" height={300} />
+          </div>
         </CardContent>
       </Card>
+
+      <div className="flex justify-end">
+        <button
+          onClick={handleOpenReport}
+          disabled={serial.data.length < 2}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 disabled:opacity-30 transition-colors"
+        >
+          <FileText className="h-3.5 w-3.5" />
+          Vista previa informe
+        </button>
+      </div>
+
+      <ReportPreview open={reportOpen} onClose={() => setReportOpen(false)} report={emgReport} />
     </div>
   );
 }

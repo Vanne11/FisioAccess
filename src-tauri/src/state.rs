@@ -60,6 +60,14 @@ impl SerialManager {
                     Ok(_) => {
                         let trimmed = line.trim();
                         // Try parsing as f64 directly, or last CSV field (signal value)
+                        // Capturar lineas "BPM: xx" del firmware
+                        if let Some(bpm_str) = trimmed.strip_prefix("BPM:") {
+                            if let Ok(bpm) = bpm_str.trim().parse::<f64>() {
+                                let _ = app.emit("serial-bpm", bpm);
+                            }
+                            continue;
+                        }
+
                         let value = trimmed
                             .parse::<f64>()
                             .or_else(|_| {
