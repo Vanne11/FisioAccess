@@ -2,6 +2,8 @@ import { useRef, useEffect, useCallback, useState } from "react";
 import type { ECGMarker, MarkerToolType, QRSComplex } from "@/lib/markers";
 import { MARKER_COLORS, QRS_COLOR } from "@/lib/markers";
 import type { RPeak } from "@/lib/peaks";
+import { createECGScale, type ECGScale } from "@/utils/ecgScale";
+import { toMillivolts, type CalibrationConfig } from "@/utils/signalCalibrator";
 
 export interface ECGDataPoint {
   timestamp_ms: number;
@@ -11,7 +13,7 @@ export interface ECGDataPoint {
 interface ECGCanvasProps {
   data: ECGDataPoint[];
   sweepSpeed: number;
-  sensitivity: number;
+  gain: number;
   frozen: boolean;
   zoom: number;
   markers: ECGMarker[];
@@ -19,16 +21,16 @@ interface ECGCanvasProps {
   rPeaks: RPeak[];
   activeTool: MarkerToolType | null;
   onCanvasClick?: (timestamp_ms: number) => void;
-  height?: number;
+  calibration: CalibrationConfig;
+  sampleRate: number;
   className?: string;
 }
 
-const PX_PER_MM = 3;
-const MARGIN_LEFT = 34;
+const MARGIN_LEFT = 40;
 const SCROLLBAR_H = 14;
 
-const COLOR_SMALL_GRID = "rgba(220, 38, 38, 0.12)";
-const COLOR_LARGE_GRID = "rgba(220, 38, 38, 0.30)";
+const COLOR_SMALL_GRID = "rgba(200, 50, 50, 0.12)";
+const COLOR_LARGE_GRID = "rgba(200, 50, 50, 0.25)";
 const COLOR_FROZEN_BADGE = "rgba(239, 68, 68, 0.7)";
 const COLOR_RPEAK_DOT = "rgba(239, 68, 68, 0.6)";
 
@@ -47,7 +49,7 @@ function getThemeColors() {
 export function ECGCanvas({
   data,
   sweepSpeed = 25,
-  sensitivity = 10,
+  gain = 10,
   frozen = false,
   zoom = 1,
   markers,
@@ -55,7 +57,8 @@ export function ECGCanvas({
   rPeaks,
   activeTool,
   onCanvasClick,
-  height = 320,
+  calibration,
+  sampleRate,
   className,
 }: ECGCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -66,7 +69,6 @@ export function ECGCanvas({
   const isDraggingRef = useRef(false);
   const dragStartXRef = useRef(0);
   const dragStartOffsetRef = useRef(0);
-  // Para distinguir click de drag
   const didDragRef = useRef(false);
 
   useEffect(() => {
@@ -75,10 +77,13 @@ export function ECGCanvas({
 
   const getVisibleMs = useCallback(
     (canvasWidth: number) => {
-      const pxPerMs = (PX_PER_MM * sweepSpeed * zoom) / 1000;
-      return (canvasWidth - MARGIN_LEFT) / pxPerMs;
+      const scale = createECGScale({
+        sweepSpeed, gain, zoom,
+        canvasWidth, canvasHeight: 100, marginLeft: MARGIN_LEFT,
+      });
+      return scale.visibleDurationMs;
     },
-    [sweepSpeed, zoom],
+    [sweepSpeed, gain, zoom],
   );
 
   const getTotalMs = useCallback(() => {
@@ -86,8 +91,9 @@ export function ECGCanvas({
     return data[data.length - 1].timestamp_ms - data[0].timestamp_ms;
   }, [data]);
 
-  // --- Refs para mapeo de coordenadas (usados en click handler) ---
-  const viewRef = useRef({ startTs: 0, pxPerMs: 1 });
+  // Ref para click handler (mapeo de coordenadas)
+  const scaleRef = useRef<ECGScale | null>(null);
+  const viewStartRef = useRef(0);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -101,7 +107,7 @@ export function ECGCanvas({
 
     const dpr = window.devicePixelRatio || 1;
     const w = container.clientWidth;
-    const totalH = container.clientHeight || height;
+    const totalH = container.clientHeight || 320;
     const chartH = frozen ? totalH - SCROLLBAR_H : totalH;
 
     canvas.width = w * dpr;
@@ -110,93 +116,187 @@ export function ECGCanvas({
     canvas.style.height = `${totalH}px`;
     ctx.scale(dpr, dpr);
 
-    const smallPx = PX_PER_MM;
-    const largePx = PX_PER_MM * 5;
+    // --- Crear escala ---
+    const scale = createECGScale({
+      sweepSpeed, gain, zoom,
+      canvasWidth: w, canvasHeight: chartH, marginLeft: MARGIN_LEFT,
+    });
+    scaleRef.current = scale;
 
-    // Fondo
+    const rawToMv = (raw: number) => toMillivolts(raw, calibration);
+
+    // --- Fondo ---
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, w, totalH);
 
-    // Cuadricula pequena
+    // --- Cuadricula alineada a valores redondos ---
+    const { smallMv, largeMv } = scale.getGridMvInterval();
+
+    // Lineas horizontales de voltaje (alineadas a 0mV)
+    const topMv = scale.yToMv(0);
+    const bottomMv = scale.yToMv(chartH);
+
+    // Pequenas
     ctx.strokeStyle = COLOR_SMALL_GRID;
     ctx.lineWidth = 0.5;
     ctx.beginPath();
-    for (let x = 0; x <= w; x += smallPx) { ctx.moveTo(x, 0); ctx.lineTo(x, chartH); }
-    for (let y = 0; y <= chartH; y += smallPx) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    const firstSmallMv = Math.ceil(bottomMv / smallMv) * smallMv;
+    for (let mv = firstSmallMv; mv <= topMv; mv += smallMv) {
+      const y = scale.mvToY(mv);
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+    }
     ctx.stroke();
 
-    // Cuadricula grande
+    // Grandes
     ctx.strokeStyle = COLOR_LARGE_GRID;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let x = 0; x <= w; x += largePx) { ctx.moveTo(x, 0); ctx.lineTo(x, chartH); }
-    for (let y = 0; y <= chartH; y += largePx) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    const firstLargeMv = Math.ceil(bottomMv / largeMv) * largeMv;
+    for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
+      const y = scale.mvToY(mv);
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+    }
     ctx.stroke();
 
-    if (data.length < 2) {
-      ctx.fillStyle = theme.label;
-      ctx.font = "9px monospace";
-      ctx.textAlign = "left";
-      ctx.fillText(`${sweepSpeed} mm/s | sens ${sensitivity}`, MARGIN_LEFT, chartH - 6);
-      return;
-    }
-
-    // Escalas de tiempo
-    const pxPerMs = (PX_PER_MM * sweepSpeed * zoom) / 1000;
-    const visibleMs = (w - MARGIN_LEFT) / pxPerMs;
-
+    // Determinar rango temporal visible
     const offset = frozen ? scrollOffsetMs : 0;
-    const lastTs = data[data.length - 1].timestamp_ms;
+    const lastTs = data.length >= 2 ? data[data.length - 1].timestamp_ms : 0;
     const endTs = lastTs - offset;
-    const startTs = endTs - visibleMs;
+    const startTs = endTs - scale.visibleDurationMs;
+    viewStartRef.current = startTs;
 
-    // Guardar para click handler
-    viewRef.current = { startTs, pxPerMs };
+    // Lineas verticales de tiempo (alineadas a valores redondos)
+    const { smallMs, largeMs } = scale.getGridTimeInterval();
 
-    // Busqueda binaria
-    let lo = 0;
-    let hi = data.length - 1;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (data[mid].timestamp_ms < startTs) lo = mid + 1; else hi = mid; }
-    const startIdx = Math.max(0, lo - 1);
-
-    // Auto-escala vertical
-    let minVal = Infinity;
-    let maxVal = -Infinity;
-    for (let i = startIdx; i < data.length; i++) {
-      const pt = data[i];
-      if (pt.timestamp_ms > endTs) break;
-      if (pt.timestamp_ms < startTs) continue;
-      if (pt.value < minVal) minVal = pt.value;
-      if (pt.value > maxVal) maxVal = pt.value;
+    ctx.strokeStyle = COLOR_SMALL_GRID;
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    if (data.length >= 2) {
+      const firstSmallT = Math.ceil(startTs / smallMs) * smallMs;
+      for (let t = firstSmallT; t <= endTs; t += smallMs) {
+        const x = scale.timeToX(t, startTs);
+        if (x < MARGIN_LEFT) continue;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, chartH);
+      }
+    } else {
+      // Sin datos: cuadricula regular
+      for (let x = MARGIN_LEFT; x <= w; x += scale.gridSmallPx) {
+        ctx.moveTo(x, 0); ctx.lineTo(x, chartH);
+      }
     }
-    const range = maxVal - minVal || 1;
-    const center = (maxVal + minVal) / 2;
-    const fillRatio = Math.min(0.95, (sensitivity / 10) * 0.45 + 0.30);
-    const pxPerUnit = (chartH * fillRatio) / range;
-    const valueToY = (val: number) => chartH / 2 - (val - center) * pxPerUnit;
-    const tsToX = (ts: number) => MARGIN_LEFT + (ts - startTs) * pxPerMs;
+    ctx.stroke();
 
-    // Etiquetas eje Y
+    ctx.strokeStyle = COLOR_LARGE_GRID;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (data.length >= 2) {
+      const firstLargeT = Math.ceil(startTs / largeMs) * largeMs;
+      for (let t = firstLargeT; t <= endTs; t += largeMs) {
+        const x = scale.timeToX(t, startTs);
+        if (x < MARGIN_LEFT) continue;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, chartH);
+      }
+    } else {
+      for (let x = MARGIN_LEFT; x <= w; x += scale.gridLargePx) {
+        ctx.moveTo(x, 0); ctx.lineTo(x, chartH);
+      }
+    }
+    ctx.stroke();
+
+    // --- Etiquetas eje Y (mV) ---
     ctx.fillStyle = theme.label;
     ctx.font = "10px monospace";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    const labelStep = range / 6;
-    for (let i = -3; i <= 3; i++) {
-      const val = center + i * labelStep;
-      const y = valueToY(val);
-      if (y < 5 || y > chartH - 5) continue;
-      ctx.fillText(val.toFixed(0), 28, y);
+    for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
+      const y = scale.mvToY(mv);
+      if (y < 8 || y > chartH - 8) continue;
+      const label = Math.abs(mv) < 0.001 ? "0" : mv.toFixed(1);
+      ctx.fillText(label, MARGIN_LEFT - 4, y);
     }
 
-    // Etiqueta escala
+    // --- Marcador de calibracion: barra 1mV en margen izquierdo ---
+    const bar1mvH = scale.pxPerMv * 1; // 1mV en pixeles
+    if (bar1mvH > 4 && bar1mvH < chartH * 0.8) {
+      const barX = 6;
+      const barCenterY = chartH / 2;
+      ctx.strokeStyle = theme.label;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(barX, barCenterY + bar1mvH / 2);
+      ctx.lineTo(barX, barCenterY - bar1mvH / 2);
+      ctx.stroke();
+      // Serifs
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(barX - 3, barCenterY + bar1mvH / 2);
+      ctx.lineTo(barX + 3, barCenterY + bar1mvH / 2);
+      ctx.moveTo(barX - 3, barCenterY - bar1mvH / 2);
+      ctx.lineTo(barX + 3, barCenterY - bar1mvH / 2);
+      ctx.stroke();
+      ctx.fillStyle = theme.label;
+      ctx.font = "8px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("1mV", barX, barCenterY);
+    }
+
+    // --- Etiqueta escala inferior ---
     ctx.fillStyle = theme.label;
     ctx.font = "9px monospace";
     ctx.textAlign = "left";
     const zl = zoom !== 1 ? ` | x${zoom.toFixed(1)}` : "";
-    ctx.fillText(`${sweepSpeed} mm/s | sens ${sensitivity}${zl}`, MARGIN_LEFT, chartH - 6);
+    const fsLabel = sampleRate > 0 ? ` | ${sampleRate.toFixed(0)}Hz` : "";
+    ctx.fillText(`${sweepSpeed}mm/s | ${gain}mm/mV${zl}${fsLabel}`, MARGIN_LEFT, chartH - 6);
 
-    // --- Dibujar marcadores de intervalo (fondo) ---
+    // --- Barra de referencia 1s en esquina inferior derecha ---
+    const bar1sW = scale.pxPerMs * 1000; // 1 segundo en pixeles
+    if (bar1sW > 10 && bar1sW < w * 0.5) {
+      const barY = chartH - 14;
+      const barEndX = w - 10;
+      const barStartX = barEndX - bar1sW;
+      if (barStartX > MARGIN_LEFT + 100) {
+        ctx.strokeStyle = theme.label;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(barStartX, barY);
+        ctx.lineTo(barEndX, barY);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(barStartX, barY - 3);
+        ctx.lineTo(barStartX, barY + 3);
+        ctx.moveTo(barEndX, barY - 3);
+        ctx.lineTo(barEndX, barY + 3);
+        ctx.stroke();
+        ctx.fillStyle = theme.label;
+        ctx.font = "8px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("1s", (barStartX + barEndX) / 2, barY - 2);
+      }
+    }
+
+    if (data.length < 2) return;
+
+    // --- Busqueda binaria del rango visible ---
+    let lo = 0;
+    let hi = data.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (data[mid].timestamp_ms < startTs) lo = mid + 1;
+      else hi = mid;
+    }
+    const startIdx = Math.max(0, lo - 1);
+
+    const tsToX = (ts: number) => scale.timeToX(ts, startTs);
+    const valueToY = (raw: number) => scale.mvToY(rawToMv(raw));
+
+    // --- Marcadores de intervalo (fondo) ---
     for (const m of markers) {
       if (m.kind !== "interval") continue;
       const x1 = tsToX(m.startMs);
@@ -206,7 +306,7 @@ export function ECGCanvas({
       ctx.fillRect(Math.max(MARGIN_LEFT, x1), 0, Math.min(w, x2) - Math.max(MARGIN_LEFT, x1), chartH);
     }
 
-    // --- Trazo ECG ---
+    // --- Trazo ECG (con clip) ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(MARGIN_LEFT, 0, w - MARGIN_LEFT, chartH);
@@ -265,7 +365,6 @@ export function ECGCanvas({
       const x = tsToX(m.timestamp_ms);
       const color = MARKER_COLORS[m.type];
 
-      // Linea vertical
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.globalAlpha = 0.5;
@@ -275,7 +374,6 @@ export function ECGCanvas({
       ctx.stroke();
       ctx.globalAlpha = 1;
 
-      // Label
       ctx.fillStyle = color;
       ctx.font = "bold 11px monospace";
       ctx.textAlign = "center";
@@ -291,7 +389,6 @@ export function ECGCanvas({
       const color = MARKER_COLORS[m.type];
       const durMs = m.endMs - m.startMs;
 
-      // Lineas de borde
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.globalAlpha = 0.7;
@@ -305,7 +402,6 @@ export function ECGCanvas({
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
 
-      // Label
       const mx = (x1 + x2) / 2;
       ctx.fillStyle = color;
       ctx.font = "bold 10px monospace";
@@ -320,11 +416,9 @@ export function ECGCanvas({
       const xs = tsToX(qrs.sMs);
       if (xs < MARGIN_LEFT || xq > w) continue;
 
-      // Zona sombreada
       ctx.fillStyle = QRS_COLOR + "12";
       ctx.fillRect(Math.max(MARGIN_LEFT, xq), 0, Math.min(w, xs) - Math.max(MARGIN_LEFT, xq), chartH);
 
-      // Bracket superior
       const bracketY = 28;
       ctx.strokeStyle = QRS_COLOR;
       ctx.lineWidth = 1.5;
@@ -337,7 +431,6 @@ export function ECGCanvas({
       ctx.stroke();
       ctx.globalAlpha = 1;
 
-      // Label
       const mx = (xq + xs) / 2;
       ctx.fillStyle = QRS_COLOR;
       ctx.font = "bold 9px monospace";
@@ -346,6 +439,23 @@ export function ECGCanvas({
     }
 
     ctx.restore();
+
+    // --- Etiquetas eje X (timestamps alineados) ---
+    if (data.length >= 2) {
+      ctx.fillStyle = theme.label;
+      ctx.font = "8px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      const { largeMs: timeLargeMs } = scale.getGridTimeInterval();
+      const labelInterval = timeLargeMs * 5; // cada 5 cuadros grandes = 1s a 25mm/s
+      const firstLabel = Math.ceil(startTs / labelInterval) * labelInterval;
+      for (let t = firstLabel; t <= endTs; t += labelInterval) {
+        const x = tsToX(t);
+        if (x < MARGIN_LEFT + 10 || x > w - 10) continue;
+        const relSec = (t - data[0].timestamp_ms) / 1000;
+        ctx.fillText(`${relSec.toFixed(1)}s`, x, chartH - 22);
+      }
+    }
 
     // --- Frozen badge + scrollbar ---
     if (frozen) {
@@ -366,6 +476,7 @@ export function ECGCanvas({
         const barX = MARGIN_LEFT;
         ctx.fillStyle = theme.scrollBg;
         ctx.fillRect(barX, barY, barW, SCROLLBAR_H - 4);
+        const visibleMs = scale.visibleDurationMs;
         const thumbRatio = Math.min(1, visibleMs / totalMs);
         const thumbW = Math.max(20, barW * thumbRatio);
         const scrollableRange = totalMs - visibleMs;
@@ -376,7 +487,7 @@ export function ECGCanvas({
         ctx.fill();
       }
     }
-  }, [data, sweepSpeed, sensitivity, frozen, zoom, height, scrollOffsetMs, markers, qrsComplexes, rPeaks, getTotalMs]);
+  }, [data, sweepSpeed, gain, frozen, zoom, scrollOffsetMs, markers, qrsComplexes, rPeaks, calibration, sampleRate, getTotalMs]);
 
   useEffect(() => {
     rafRef.current = requestAnimationFrame(draw);
@@ -412,7 +523,7 @@ export function ECGCanvas({
     [frozen, data, getVisibleMs, getTotalMs],
   );
 
-  // --- Mouse handlers: drag para scroll + click para marcadores ---
+  // --- Mouse handlers ---
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!frozen) return;
@@ -432,14 +543,15 @@ export function ECGCanvas({
       if (dx > 3) didDragRef.current = true;
       const container = containerRef.current;
       if (!container) return;
-      const pxPerMs = (PX_PER_MM * sweepSpeed * zoom) / 1000;
-      const dtMs = (e.clientX - dragStartXRef.current) / pxPerMs;
-      const visibleMs = getVisibleMs(container.clientWidth);
+      const s = scaleRef.current;
+      if (!s) return;
+      const dtMs = (e.clientX - dragStartXRef.current) / s.pxPerMs;
+      const visibleMs = s.visibleDurationMs;
       const totalMs = getTotalMs();
       const maxOffset = Math.max(0, totalMs - visibleMs);
       setScrollOffsetMs(Math.max(0, Math.min(maxOffset, dragStartOffsetRef.current + dtMs)));
     },
-    [frozen, data, sweepSpeed, zoom, getVisibleMs, getTotalMs],
+    [frozen, data, getTotalMs],
   );
 
   const handleMouseUp = useCallback(
@@ -447,14 +559,14 @@ export function ECGCanvas({
       const wasDragging = isDraggingRef.current;
       isDraggingRef.current = false;
 
-      // Si no hubo drag significativo y hay herramienta activa, es un click para marcar
       if (wasDragging && !didDragRef.current && activeTool && onCanvasClick && frozen) {
         const container = containerRef.current;
         if (!container) return;
+        const s = scaleRef.current;
+        if (!s) return;
         const rect = container.getBoundingClientRect();
         const px = e.clientX - rect.left;
-        const { startTs, pxPerMs } = viewRef.current;
-        const ts = startTs + (px - MARGIN_LEFT) / pxPerMs;
+        const ts = s.xToTime(px, viewStartRef.current);
         if (ts > 0) onCanvasClick(ts);
       }
     },
@@ -471,7 +583,7 @@ export function ECGCanvas({
     <div
       ref={containerRef}
       className={className}
-      style={{ width: "100%", height: height ? height : "100%", minHeight: 200, cursor: cursorStyle }}
+      style={{ width: "100%", height: "100%", minHeight: 200, cursor: cursorStyle }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}

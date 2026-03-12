@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   Heart,
   Pause,
@@ -18,12 +18,12 @@ import { ECGCanvas } from "@/components/shared/ECGCanvas";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { FilterPanel } from "@/components/shared/FilterPanel";
 import { MarkerPanel } from "@/components/shared/MarkerPanel";
+import { CalibrationPanel } from "@/components/shared/CalibrationPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useSerial } from "@/hooks/useSerial";
 import {
   type FilterConfig,
   DEFAULT_FILTER_CONFIG,
-  estimateSampleRate,
   applyFilterChain,
 } from "@/lib/dsp";
 import { detectRPeaks, calculateBPM } from "@/lib/peaks";
@@ -36,19 +36,57 @@ import {
   detectQRSComplexes,
 } from "@/lib/markers";
 import { exportECGAsPNG } from "@/lib/export";
+import { SampleRateDetector } from "@/utils/sampleRateDetector";
+import { detectADCType, calibrateFrom1mV } from "@/utils/signalCalibrator";
+import {
+  useCalibrationStore,
+  selectCalibrationConfig,
+} from "@/stores/useCalibrationStore";
+import { PX_PER_MM } from "@/utils/ecgScale";
 
 const SWEEP_OPTIONS = [12.5, 25, 50] as const;
-const SENSITIVITY_OPTIONS = [5, 10, 20] as const;
+const GAIN_OPTIONS = [5, 10, 20, 40] as const;
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8] as const;
 const BUFFER_SIZE = 50000;
 
 export function ECGMonitor() {
   const serial = useSerial(9600, BUFFER_SIZE);
   const [sweepSpeed, setSweepSpeed] = useState<number>(25);
-  const [sensitivity, setSensitivity] = useState<number>(10);
+  const [gain, setGain] = useState<number>(10);
   const [frozen, setFrozen] = useState(false);
   const [zoomIdx, setZoomIdx] = useState(3);
   const [filterConfig, setFilterConfig] = useState<FilterConfig>(DEFAULT_FILTER_CONFIG);
+  const [calibrating, setCalibrating] = useState(false);
+
+  // Calibracion
+  const calStore = useCalibrationStore();
+  const calibration = useCalibrationStore(selectCalibrationConfig);
+
+  // Sample rate detector
+  const srDetectorRef = useRef(new SampleRateDetector());
+  const [srInfo, setSrInfo] = useState(srDetectorRef.current.info);
+
+  // Actualizar detector con cada muestra nueva
+  useEffect(() => {
+    const det = srDetectorRef.current;
+    if (serial.data.length === 0) return;
+    const last = serial.data[serial.data.length - 1];
+    det.addSample(last.timestamp_ms);
+    setSrInfo(det.info);
+  }, [serial.data.length]);
+
+  // Autodeteccion de ADC (una vez, con suficientes datos)
+  useEffect(() => {
+    if (calStore.autoDetected || serial.data.length < 50) return;
+    const values = serial.data.slice(0, 200).map((d) => d.value);
+    const result = detectADCType(values);
+    if (result.confidence >= 0.6) {
+      calStore.applyConfig({ adcBits: result.detectedBits });
+      calStore.setAutoDetected(true);
+    }
+  }, [serial.data.length, calStore]);
+
+  const sampleRate = srInfo.calibrated ? srInfo.rate : srInfo.rate;
 
   // Marcadores
   const [markers, setMarkers] = useState<ECGMarker[]>([]);
@@ -63,28 +101,23 @@ export function ECGMonitor() {
     if (raw.length < 10) return raw;
     const anyOn = filterConfig.notchEnabled || filterConfig.highpassEnabled || filterConfig.lowpassEnabled;
     if (!anyOn) return raw;
-    const timestamps = raw.map((d) => d.timestamp_ms);
+    const fs = sampleRate > 10 ? sampleRate : 80;
     const values = raw.map((d) => d.value);
-    const fs = estimateSampleRate(timestamps);
-    if (fs < 10) return raw;
     const filtered = applyFilterChain(values, fs, filterConfig);
     return raw.map((d, i) => ({ timestamp_ms: d.timestamp_ms, value: filtered[i] }));
-  }, [serial.data, filterConfig]);
+  }, [serial.data, filterConfig, sampleRate]);
 
   // --- R-peaks y BPM ---
   const rPeaks = useMemo(() => detectRPeaks(filteredData), [filteredData]);
   const bpm = useMemo(() => calculateBPM(rPeaks), [rPeaks]);
 
-  // --- Complejos QRS (detectados de marcas Q, R, S) ---
+  // --- Complejos QRS ---
   const qrsComplexes = useMemo(() => detectQRSComplexes(markers), [markers]);
-
-  const sampleRate = serial.data.length >= 10
-    ? estimateSampleRate(serial.data.map((d) => d.timestamp_ms))
-    : 0;
 
   // --- Conexion ---
   const handleConnect = async () => {
     serial.clearData();
+    srDetectorRef.current.reset();
     setFrozen(false);
     setMarkers([]);
     await serial.connect();
@@ -110,11 +143,10 @@ export function ECGMonitor() {
   const handleZoomOut = useCallback(() => setZoomIdx((i) => Math.max(i - 1, 0)), []);
   const handleZoomReset = useCallback(() => setZoomIdx(3), []);
 
-  // --- Marcaje: click en canvas ---
+  // --- Marcaje ---
   const handleCanvasClick = useCallback(
     (timestamp_ms: number) => {
       if (!activeTool) return;
-
       const isPoint = (POINT_TYPES as readonly string[]).includes(activeTool);
       const isInterval = (INTERVAL_TYPES as readonly string[]).includes(activeTool);
 
@@ -125,10 +157,8 @@ export function ECGMonitor() {
         ]);
       } else if (isInterval) {
         if (pendingIntervalStart === null) {
-          // Primer click: guardar inicio
           setPendingIntervalStart(timestamp_ms);
         } else {
-          // Segundo click: crear intervalo
           const startMs = Math.min(pendingIntervalStart, timestamp_ms);
           const endMs = Math.max(pendingIntervalStart, timestamp_ms);
           setMarkers((prev) => [
@@ -142,7 +172,6 @@ export function ECGMonitor() {
     [activeTool, pendingIntervalStart],
   );
 
-  // Limpiar pending al cambiar herramienta
   const handleToolChange = useCallback((tool: MarkerToolType | null) => {
     setActiveTool(tool);
     setPendingIntervalStart(null);
@@ -157,9 +186,19 @@ export function ECGMonitor() {
     setPendingIntervalStart(null);
   }, []);
 
+  // --- Calibracion 1mV ---
+  const handleCalibrate1mV = useCallback(() => {
+    if (serial.data.length < 50) return;
+    setCalibrating(true);
+    const values = serial.data.slice(-500).map((d) => d.value);
+    const factor = calibrateFrom1mV(values, calibration);
+    calStore.setCalibrationFactor(factor);
+    setCalibrating(false);
+  }, [serial.data, calibration, calStore]);
+
   // --- Exportar PNG ---
   const [exporting, setExporting] = useState(false);
-  const [exportSeconds, setExportSeconds] = useState(0); // 0 = todo
+  const [exportSeconds, setExportSeconds] = useState(0);
 
   const handleExport = useCallback(async (includeMarkers: boolean) => {
     if (filteredData.length < 2) return;
@@ -186,12 +225,13 @@ export function ECGMonitor() {
       await exportECGAsPNG({
         data: exportData,
         sweepSpeed,
-        sensitivity,
+        gain,
         markers: exportMarkers,
         qrsComplexes: exportQrs,
         rPeaks: exportRPeaks,
         bpm,
         sampleRate,
+        calibration,
         includeMarkers,
       });
     } catch (err) {
@@ -199,7 +239,7 @@ export function ECGMonitor() {
     } finally {
       setExporting(false);
     }
-  }, [filteredData, sweepSpeed, sensitivity, markers, qrsComplexes, rPeaks, bpm, sampleRate, exportSeconds]);
+  }, [filteredData, sweepSpeed, gain, markers, qrsComplexes, rPeaks, bpm, sampleRate, calibration, exportSeconds]);
 
   // --- Metricas ---
   const lastValue = serial.data.length > 0 ? serial.data[serial.data.length - 1].value : null;
@@ -213,6 +253,11 @@ export function ECGMonitor() {
     : serial.recording && !frozen
       ? "Recibiendo"
       : frozen ? "Congelado" : "Conectado";
+
+  // Informacion derivada de la escala
+  const pxPerMs = (PX_PER_MM * sweepSpeed * zoom) / 1000;
+  const visibleSec = (800 / pxPerMs) / 1000; // aprox con ancho tipico
+  const visibleMv = 800 / (PX_PER_MM * gain); // aprox con alto tipico
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -264,12 +309,12 @@ export function ECGMonitor() {
 
           <div className="h-6 w-px bg-surface-600" />
 
-          <label className="text-xs text-secondary">Sensibilidad:</label>
+          <label className="text-xs text-secondary">Ganancia:</label>
           <div className="flex gap-1">
-            {SENSITIVITY_OPTIONS.map((s) => (
-              <button key={s} onClick={() => setSensitivity(s)}
-                className={`px-2 py-1 text-xs rounded font-mono transition-colors ${sensitivity === s ? "bg-ecg-500/20 text-ecg-400 ring-1 ring-ecg-500/40" : "bg-surface-700 text-secondary hover:text-primary"}`}
-              >{s}</button>
+            {GAIN_OPTIONS.map((g) => (
+              <button key={g} onClick={() => setGain(g)}
+                className={`px-2 py-1 text-xs rounded font-mono transition-colors ${gain === g ? "bg-ecg-500/20 text-ecg-400 ring-1 ring-ecg-500/40" : "bg-surface-700 text-secondary hover:text-primary"}`}
+              >{g}</button>
             ))}
             <span className="text-xs text-secondary self-center ml-1">mm/mV</span>
           </div>
@@ -312,7 +357,7 @@ export function ECGMonitor() {
             <ECGCanvas
               data={filteredData}
               sweepSpeed={sweepSpeed}
-              sensitivity={sensitivity}
+              gain={gain}
               frozen={frozen || !serial.recording}
               zoom={zoom}
               markers={markers}
@@ -320,6 +365,8 @@ export function ECGMonitor() {
               rPeaks={rPeaks}
               activeTool={activeTool}
               onCanvasClick={handleCanvasClick}
+              calibration={calibration}
+              sampleRate={sampleRate}
               className="flex-1 min-h-0"
             />
             {(frozen || !serial.recording) && serial.data.length > 0 && (
@@ -331,7 +378,7 @@ export function ECGMonitor() {
         </Card>
 
         {/* Panel lateral */}
-        <div className="flex flex-col gap-3 overflow-auto">
+        <div className="flex flex-col gap-3 overflow-auto min-h-0">
           {/* BPM */}
           <Card>
             <CardContent className="text-center">
@@ -345,7 +392,7 @@ export function ECGMonitor() {
             </CardContent>
           </Card>
 
-          {/* Metricas compactas */}
+          {/* Metricas */}
           <Card>
             <CardContent>
               <div className="flex justify-between text-xs text-secondary mb-1">
@@ -364,9 +411,20 @@ export function ECGMonitor() {
                 <span>Grabacion</span>
                 <span className="font-mono text-ecg-400">{totalMin}:{totalSec.toString().padStart(2, "0")}</span>
               </div>
-              <div className="flex justify-between text-xs text-secondary">
+              <div className="flex justify-between text-xs text-secondary mb-1">
                 <span>Fs</span>
-                <span className="font-mono text-ecg-400">{sampleRate > 0 ? `${sampleRate.toFixed(0)} Hz` : "--"}</span>
+                <span className="font-mono text-ecg-400">
+                  {sampleRate > 0 ? `${sampleRate.toFixed(0)} Hz` : "--"}
+                  {srInfo.calibrated && <span className="text-green-400 ml-1" title={`Confianza: ${(srInfo.confidence * 100).toFixed(0)}%`}>●</span>}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs text-secondary mb-1">
+                <span>Ventana</span>
+                <span className="font-mono text-ecg-400">{visibleSec.toFixed(1)}s</span>
+              </div>
+              <div className="flex justify-between text-xs text-secondary">
+                <span>Rango</span>
+                <span className="font-mono text-ecg-400">±{(visibleMv / 2).toFixed(1)}mV</span>
               </div>
             </CardContent>
           </Card>
@@ -376,6 +434,17 @@ export function ECGMonitor() {
             <CardHeader>Filtros</CardHeader>
             <CardContent>
               <FilterPanel config={filterConfig} onChange={setFilterConfig} />
+            </CardContent>
+          </Card>
+
+          {/* Calibracion */}
+          <Card>
+            <CardHeader>Calibracion</CardHeader>
+            <CardContent>
+              <CalibrationPanel
+                onCalibrate1mV={handleCalibrate1mV}
+                calibrating={calibrating}
+              />
             </CardContent>
           </Card>
 

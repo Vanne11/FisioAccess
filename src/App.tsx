@@ -19,7 +19,7 @@ function App() {
     <BrowserRouter>
       <div className="flex h-screen bg-surface-950">
         <Sidebar />
-        <main className="flex-1 overflow-auto p-6 flex flex-col">
+        <main className="flex-1 min-h-0 overflow-auto p-6 flex flex-col">
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/ecg" element={<ECGMonitor />} />

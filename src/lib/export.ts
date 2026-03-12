@@ -2,6 +2,8 @@ import type { ECGDataPoint } from "@/components/shared/ECGCanvas";
 import type { ECGMarker, QRSComplex } from "@/lib/markers";
 import { MARKER_COLORS, QRS_COLOR } from "@/lib/markers";
 import type { RPeak } from "@/lib/peaks";
+import { createECGScale } from "@/utils/ecgScale";
+import { toMillivolts, type CalibrationConfig, DEFAULT_CALIBRATION } from "@/utils/signalCalibrator";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 
@@ -9,19 +11,20 @@ const BASE_PX_PER_MM = 4;
 const MAX_CANVAS_WIDTH = 16000;
 const MARGIN_LEFT = 40;
 
-const COLOR_SMALL_GRID = "rgba(220, 38, 38, 0.15)";
-const COLOR_LARGE_GRID = "rgba(220, 38, 38, 0.35)";
+const COLOR_SMALL_GRID = "rgba(200, 50, 50, 0.15)";
+const COLOR_LARGE_GRID = "rgba(200, 50, 50, 0.35)";
 const COLOR_RPEAK_DOT = "rgba(239, 68, 68, 0.6)";
 
 interface ExportOptions {
   data: ECGDataPoint[];
   sweepSpeed: number;
-  sensitivity: number;
+  gain: number;
   markers: ECGMarker[];
   qrsComplexes: QRSComplex[];
   rPeaks: RPeak[];
   bpm: number;
   sampleRate: number;
+  calibration: CalibrationConfig;
   includeMarkers: boolean;
 }
 
@@ -31,39 +34,30 @@ function drawInfoPanel(
   canvasW: number,
   totalDataMs: number,
 ) {
-  const { markers, qrsComplexes, rPeaks, bpm, sampleRate, sweepSpeed, sensitivity, data } = opts;
+  const { markers, qrsComplexes, rPeaks, bpm, sampleRate, sweepSpeed, gain, data } = opts;
 
   const panelW = 220;
   const lineH = 15;
   const pad = 10;
   const headerH = 22;
 
-  // Calcular las lineas de contenido
   const lines: { label: string; value: string; color?: string }[] = [];
 
-  // BPM
   lines.push({ label: "BPM", value: bpm > 0 ? bpm.toFixed(0) : "--", color: "#ef4444" });
 
-  // Duracion
   const durSec = totalDataMs / 1000;
   const durMin = Math.floor(durSec / 60);
   const durS = Math.floor(durSec % 60);
   lines.push({ label: "Duracion", value: `${durMin}:${String(durS).padStart(2, "0")}` });
-
-  // Muestras y Fs
   lines.push({ label: "Muestras", value: String(data.length) });
   lines.push({ label: "Fs", value: sampleRate > 0 ? `${sampleRate.toFixed(0)} Hz` : "--" });
-
-  // Config
   lines.push({ label: "Velocidad", value: `${sweepSpeed} mm/s` });
-  lines.push({ label: "Sensibilidad", value: `${sensitivity} mm/mV` });
+  lines.push({ label: "Ganancia", value: `${gain} mm/mV` });
 
-  // R-peaks
   if (rPeaks.length > 0) {
     lines.push({ label: "R-peaks", value: String(rPeaks.length), color: "#ef4444" });
   }
 
-  // Separador + marcadores puntuales
   const pointMarkers = markers.filter((m) => m.kind === "point");
   const intervalMarkers = markers.filter((m) => m.kind === "interval");
 
@@ -101,7 +95,6 @@ function drawInfoPanel(
   const px = canvasW - panelW - 12;
   const py = 12;
 
-  // Fondo
   ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
   ctx.strokeStyle = "#cbd5e1";
   ctx.lineWidth = 1;
@@ -110,7 +103,6 @@ function drawInfoPanel(
   ctx.fill();
   ctx.stroke();
 
-  // Header
   ctx.fillStyle = "#1e293b";
   ctx.beginPath();
   ctx.roundRect(px, py, panelW, headerH, [6, 6, 0, 0]);
@@ -122,7 +114,6 @@ function drawInfoPanel(
   ctx.textBaseline = "middle";
   ctx.fillText("INFORME ECG", px + panelW / 2, py + headerH / 2);
 
-  // Fecha
   const now = new Date();
   const dateStr = `${now.getDate().toString().padStart(2, "0")}/${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getFullYear()} ${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
   ctx.fillStyle = "#64748b";
@@ -130,13 +121,11 @@ function drawInfoPanel(
   ctx.textAlign = "left";
   ctx.fillText(dateStr, px + pad, py + headerH + pad);
 
-  // Lineas
   let curY = py + headerH + pad + lineH;
   ctx.textBaseline = "middle";
 
   for (const line of lines) {
     if (line.label.startsWith("---")) {
-      // Separador
       ctx.fillStyle = "#94a3b8";
       ctx.font = "bold 9px monospace";
       ctx.textAlign = "center";
@@ -145,13 +134,11 @@ function drawInfoPanel(
       continue;
     }
 
-    // Label
     ctx.fillStyle = line.color || "#334155";
     ctx.font = "bold 11px monospace";
     ctx.textAlign = "left";
     ctx.fillText(line.label, px + pad, curY);
 
-    // Value
     ctx.fillStyle = line.color || "#1e293b";
     ctx.font = "11px monospace";
     ctx.textAlign = "right";
@@ -165,10 +152,11 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   const {
     data,
     sweepSpeed,
-    sensitivity,
+    gain,
     markers,
     qrsComplexes,
     rPeaks,
+    calibration,
     includeMarkers,
   } = opts;
 
@@ -189,71 +177,120 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   canvas.height = canvasH;
   const ctx = canvas.getContext("2d")!;
 
-  const smallPx = pxPerMm;
-  const largePx = pxPerMm * 5;
+  const pxPerMv = pxPerMm * gain;
+  const baselineY = canvasH / 2;
+  const rawToMv = (raw: number) => toMillivolts(raw, calibration);
+  const mvToY = (mv: number) => baselineY - mv * pxPerMv;
+  const valueToY = (raw: number) => mvToY(rawToMv(raw));
 
-  // Fondo blanco (papel ECG)
+  const startTs = data[0].timestamp_ms;
+  const tsToX = (ts: number) => MARGIN_LEFT + (ts - startTs) * pxPerMs;
+
+  // Intervalos de cuadricula
+  const smallMv = 1 / gain;
+  const largeMv = smallMv * 5;
+  const smallMs = 1000 / sweepSpeed;
+  const largeMs = smallMs * 5;
+
+  // Fondo blanco
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvasW, canvasH);
 
-  // Cuadricula pequena
+  // Cuadricula horizontal (voltaje, alineada a 0mV)
+  const topMv = (baselineY) / pxPerMv;
+  const bottomMv = -(canvasH - baselineY) / pxPerMv;
+
   ctx.strokeStyle = COLOR_SMALL_GRID;
   ctx.lineWidth = 0.5;
   ctx.beginPath();
-  for (let x = 0; x <= canvasW; x += smallPx) { ctx.moveTo(x, 0); ctx.lineTo(x, canvasH); }
-  for (let y = 0; y <= canvasH; y += smallPx) { ctx.moveTo(0, y); ctx.lineTo(canvasW, y); }
+  const firstSmallMv = Math.ceil(bottomMv / smallMv) * smallMv;
+  for (let mv = firstSmallMv; mv <= topMv; mv += smallMv) {
+    const y = mvToY(mv);
+    ctx.moveTo(0, y); ctx.lineTo(canvasW, y);
+  }
   ctx.stroke();
 
-  // Cuadricula grande
   ctx.strokeStyle = COLOR_LARGE_GRID;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  for (let x = 0; x <= canvasW; x += largePx) { ctx.moveTo(x, 0); ctx.lineTo(x, canvasH); }
-  for (let y = 0; y <= canvasH; y += largePx) { ctx.moveTo(0, y); ctx.lineTo(canvasW, y); }
+  const firstLargeMv = Math.ceil(bottomMv / largeMv) * largeMv;
+  for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
+    const y = mvToY(mv);
+    ctx.moveTo(0, y); ctx.lineTo(canvasW, y);
+  }
   ctx.stroke();
 
-  // Escalas
-  const startTs = data[0].timestamp_ms;
+  // Cuadricula vertical (tiempo, alineada)
   const endTs = data[data.length - 1].timestamp_ms;
-  const tsToX = (ts: number) => MARGIN_LEFT + (ts - startTs) * pxPerMs;
 
-  // Auto-escala vertical
-  let minVal = Infinity;
-  let maxVal = -Infinity;
-  for (const pt of data) {
-    if (pt.value < minVal) minVal = pt.value;
-    if (pt.value > maxVal) maxVal = pt.value;
+  ctx.strokeStyle = COLOR_SMALL_GRID;
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  const firstSmallT = Math.ceil(startTs / smallMs) * smallMs;
+  for (let t = firstSmallT; t <= endTs; t += smallMs) {
+    const x = tsToX(t);
+    if (x < MARGIN_LEFT) continue;
+    ctx.moveTo(x, 0); ctx.lineTo(x, canvasH);
   }
-  const range = maxVal - minVal || 1;
-  const center = (maxVal + minVal) / 2;
-  const fillRatio = Math.min(0.95, (sensitivity / 10) * 0.45 + 0.30);
-  const pxPerUnit = (canvasH * fillRatio) / range;
-  const valueToY = (val: number) => canvasH / 2 - (val - center) * pxPerUnit;
+  ctx.stroke();
+
+  ctx.strokeStyle = COLOR_LARGE_GRID;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const firstLargeT = Math.ceil(startTs / largeMs) * largeMs;
+  for (let t = firstLargeT; t <= endTs; t += largeMs) {
+    const x = tsToX(t);
+    if (x < MARGIN_LEFT) continue;
+    ctx.moveTo(x, 0); ctx.lineTo(x, canvasH);
+  }
+  ctx.stroke();
 
   // Etiquetas eje Y
   ctx.fillStyle = "#64748b";
   ctx.font = "11px monospace";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
-  const labelStep = range / 6;
-  for (let i = -3; i <= 3; i++) {
-    const val = center + i * labelStep;
-    const y = valueToY(val);
-    if (y < 5 || y > canvasH - 5) continue;
-    ctx.fillText(val.toFixed(0), MARGIN_LEFT - 4, y);
+  for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
+    const y = mvToY(mv);
+    if (y < 8 || y > canvasH - 8) continue;
+    ctx.fillText(Math.abs(mv) < 0.001 ? "0" : mv.toFixed(1), MARGIN_LEFT - 4, y);
   }
 
-  // Etiquetas eje X (cada segundo)
+  // Etiquetas eje X
   ctx.fillStyle = "#64748b";
   ctx.font = "9px monospace";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  const firstSec = Math.ceil(startTs / 1000);
-  const lastSec = Math.floor(endTs / 1000);
-  for (let s = firstSec; s <= lastSec; s++) {
-    const x = tsToX(s * 1000);
+  const labelInterval = largeMs * 5;
+  const firstLabel = Math.ceil(startTs / labelInterval) * labelInterval;
+  for (let t = firstLabel; t <= endTs; t += labelInterval) {
+    const x = tsToX(t);
     if (x < MARGIN_LEFT || x > canvasW - 10) continue;
-    ctx.fillText(`${((s * 1000 - startTs) / 1000).toFixed(0)}s`, x, canvasH - 14);
+    ctx.fillText(`${((t - startTs) / 1000).toFixed(0)}s`, x, canvasH - 14);
+  }
+
+  // Barra de calibracion 1mV
+  const bar1mvH = pxPerMv;
+  if (bar1mvH > 4 && bar1mvH < canvasH * 0.8) {
+    const barX = 8;
+    ctx.strokeStyle = "#64748b";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(barX, baselineY + bar1mvH / 2);
+    ctx.lineTo(barX, baselineY - bar1mvH / 2);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(barX - 3, baselineY + bar1mvH / 2);
+    ctx.lineTo(barX + 3, baselineY + bar1mvH / 2);
+    ctx.moveTo(barX - 3, baselineY - bar1mvH / 2);
+    ctx.lineTo(barX + 3, baselineY - bar1mvH / 2);
+    ctx.stroke();
+    ctx.fillStyle = "#64748b";
+    ctx.font = "8px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("1mV", barX, baselineY);
   }
 
   // Marcadores de intervalo (fondo)
@@ -289,7 +326,6 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   ctx.stroke();
 
   if (includeMarkers) {
-    // R-peak dots
     for (const pk of rPeaks) {
       const x = tsToX(pk.timestamp_ms);
       const y = valueToY(pk.value);
@@ -299,7 +335,6 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
       ctx.fill();
     }
 
-    // Marcadores puntuales
     for (const m of markers) {
       if (m.kind !== "point") continue;
       const x = tsToX(m.timestamp_ms);
@@ -320,7 +355,6 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
       ctx.fillText(m.type, x, 16);
     }
 
-    // Marcadores de intervalo (lineas + label)
     for (const m of markers) {
       if (m.kind !== "interval") continue;
       const x1 = tsToX(m.startMs);
@@ -348,7 +382,6 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
       ctx.fillText(`${m.type} ${durMs.toFixed(0)}ms`, mx, canvasH - 30);
     }
 
-    // Complejos QRS
     for (let qi = 0; qi < qrsComplexes.length; qi++) {
       const qrs = qrsComplexes[qi];
       const xq = tsToX(qrs.qMs);
@@ -379,13 +412,12 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
 
   ctx.restore();
 
-  // Info bar en la parte inferior
+  // Info bar inferior
   ctx.fillStyle = "#64748b";
   ctx.font = "10px monospace";
   ctx.textAlign = "left";
-  ctx.fillText(`${sweepSpeed} mm/s | sens ${sensitivity} mm/mV | ${data.length} muestras`, MARGIN_LEFT, canvasH - 2);
+  ctx.fillText(`${sweepSpeed} mm/s | ${gain} mm/mV | ${data.length} muestras`, MARGIN_LEFT, canvasH - 2);
 
-  // --- Panel de informacion (solo con marcas) ---
   if (includeMarkers) {
     drawInfoPanel(ctx, opts, canvasW, totalDataMs);
   }
