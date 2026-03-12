@@ -100,7 +100,7 @@ export function EMGMonitor() {
                     style={{ width: `${calibrationProgress * 100}%` }}
                   />
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
+                <div className="text-xs text-secondary mt-1">
                   {Math.round(calibrationProgress * 100)}%
                 </div>
               </div>
@@ -126,7 +126,7 @@ export function EMGMonitor() {
       <div className="grid grid-cols-2 gap-3 mb-4">
         <Card>
           <CardContent className="text-center">
-            <div className="text-xs text-slate-500 mb-1">RMS (uV)</div>
+            <div className="text-xs text-secondary mb-1">RMS (uV)</div>
             <div className="text-2xl font-bold text-emg-400 font-mono">
               {rms !== null ? rms.toFixed(1) : "--"}
             </div>
@@ -134,7 +134,7 @@ export function EMGMonitor() {
         </Card>
         <Card>
           <CardContent className="text-center">
-            <div className="text-xs text-slate-500 mb-1">Pico Max</div>
+            <div className="text-xs text-secondary mb-1">Pico Max</div>
             <div className="text-2xl font-bold text-emg-400 font-mono">
               {peak !== null ? peak.toFixed(0) : "--"}
             </div>

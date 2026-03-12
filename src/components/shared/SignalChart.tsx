@@ -24,7 +24,7 @@ export function SignalChart({
     return (
       <div
         className={cn(
-          "signal-grid w-full flex items-center justify-center text-slate-600 rounded-lg",
+          "signal-grid w-full flex items-center justify-center text-muted rounded-lg",
           className,
         )}
         style={{ height }}

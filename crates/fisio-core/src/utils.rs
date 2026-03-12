@@ -1,4 +1,4 @@
-//! Utilidades compartidas para FisioAcces
+//! Utilidades compartidas para FisioAccess
 
 use chrono::{DateTime, Utc};
 

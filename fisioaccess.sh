@@ -21,7 +21,7 @@ err()   { echo -e "${RED}[error]${NC} $*" >&2; }
 
 show_banner() {
   echo -e ""
-  echo -e "  ${BLUE}${BOLD}FisioAcces Integrado${NC}"
+  echo -e "  ${BLUE}${BOLD}FisioAccess${NC}"
   echo -e "  ${DIM}Plataforma de monitoreo biomedico${NC}"
   echo -e ""
 }

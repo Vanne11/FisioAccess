@@ -1,4 +1,4 @@
-//! FisioAcces HTTP
+//! FisioAccess HTTP
 //! 
 //! Módulo de transmisión HTTP y WebSocket para datos médicos.
 

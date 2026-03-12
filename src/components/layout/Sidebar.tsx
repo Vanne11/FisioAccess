@@ -4,6 +4,7 @@ import {
   Heart,
   Wind,
   LayoutDashboard,
+  Settings,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -26,13 +27,13 @@ export function Sidebar() {
   const location = useLocation();
 
   return (
-    <nav className="w-16 lg:w-56 flex flex-col border-r border-white/5 bg-surface-900/80 backdrop-blur-sm">
+    <nav className="w-16 lg:w-56 flex flex-col border-r border-border bg-surface-900/80 backdrop-blur-sm">
       {/* Logo */}
-      <div className="h-14 flex items-center px-4 border-b border-white/5">
-        <span className="hidden lg:block text-sm font-semibold text-slate-200 tracking-wide">
-          FisioAcces
+      <div className="h-14 flex items-center px-4 border-b border-border">
+        <span className="hidden lg:block text-sm font-semibold text-primary tracking-wide">
+          FisioAccess
         </span>
-        <span className="lg:hidden text-sm font-bold text-slate-200">FA</span>
+        <span className="lg:hidden text-sm font-bold text-primary">FA</span>
       </div>
 
       {/* Nav */}
@@ -46,8 +47,8 @@ export function Sidebar() {
                 className={cn(
                   "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
                   active
-                    ? "bg-white/5 text-slate-100"
-                    : "text-slate-500 hover:bg-white/5 hover:text-slate-300",
+                    ? "bg-surface-800 text-primary"
+                    : "text-secondary hover:bg-surface-800 hover:text-primary",
                 )}
               >
                 <Icon
@@ -60,9 +61,21 @@ export function Sidebar() {
         })}
       </ul>
 
-      {/* Footer */}
-      <div className="p-3 border-t border-white/5">
-        <span className="hidden lg:block text-[10px] text-slate-600">
+      {/* Settings + Footer */}
+      <div className="p-2 border-t border-border">
+        <Link
+          to="/settings"
+          className={cn(
+            "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
+            location.pathname === "/settings"
+              ? "bg-surface-800 text-primary"
+              : "text-secondary hover:bg-surface-800 hover:text-primary",
+          )}
+        >
+          <Settings className="h-4 w-4 shrink-0" />
+          <span className="hidden lg:block">Configuracion</span>
+        </Link>
+        <span className="hidden lg:block text-[10px] text-muted px-3 mt-2">
           v0.1.0
         </span>
       </div>

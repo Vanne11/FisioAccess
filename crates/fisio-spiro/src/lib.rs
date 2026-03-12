@@ -1,4 +1,4 @@
-//! FisioAcces Spirometer
+//! FisioAccess Spirometer
 //! 
 //! Módulo de procesamiento de espirómetro para pruebas de función pulmonar.
 

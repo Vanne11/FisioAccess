@@ -1,4 +1,4 @@
-//! Traits comunes para FisioAcces
+//! Traits comunes para FisioAccess
 
 use crate::types::{CalibrationResult, ConnectionState, DataPoint, DeviceType, FilterParams, SerialConfig};
 use async_trait::async_trait;

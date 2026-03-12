@@ -1,4 +1,4 @@
-//! FisioAcces Filters
+//! FisioAccess Filters
 //! 
 //! Biblioteca de filtros digitales para procesamiento de señales biomédicas.
 

@@ -1,4 +1,4 @@
-# 🏥 FisioAcces Integrado
+# 🏥 FisioAccess
 
 **Plataforma Unificada para el Monitoreo y Procesamiento de Señales Médicas**
 

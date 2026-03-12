@@ -2,7 +2,7 @@
 name = "fisio-core"
 version = "0.1.0"
 edition = "2021"
-description = "Tipos, traits y utilidades compartidas para FisioAcces"
+description = "Tipos, traits y utilidades compartidas para FisioAccess"
 
 [dependencies]
 serde.workspace = true

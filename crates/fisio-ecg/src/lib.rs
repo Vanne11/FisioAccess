@@ -1,4 +1,4 @@
-//! FisioAcces ECG
+//! FisioAccess ECG
 //! 
 //! Módulo de procesamiento de señales de electrocardiograma (ECG).
 

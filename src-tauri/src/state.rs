@@ -59,13 +59,13 @@ impl SerialManager {
                     Ok(0) => break,
                     Ok(_) => {
                         let trimmed = line.trim();
-                        // Try parsing as f64 directly, or first CSV field
+                        // Try parsing as f64 directly, or last CSV field (signal value)
                         let value = trimmed
                             .parse::<f64>()
                             .or_else(|_| {
                                 trimmed
                                     .split([',', '\t', ';'])
-                                    .next()
+                                    .last()
                                     .unwrap_or("")
                                     .trim()
                                     .parse::<f64>()

@@ -1,6 +1,6 @@
-//! FisioAcces Core
+//! FisioAccess Core
 //! 
-//! Tipos, traits y utilidades compartidas para todos los módulos de FisioAcces.
+//! Tipos, traits y utilidades compartidas para todos los módulos de FisioAccess.
 
 pub mod types;
 pub mod traits;

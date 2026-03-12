@@ -1,4 +1,4 @@
-//! FisioAcces Data
+//! FisioAccess Data
 //! 
 //! Módulo de grabación y exportación de datos médicos.
 

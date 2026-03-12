@@ -37,7 +37,7 @@ export function Dashboard() {
   return (
     <div>
       <PageHeader
-        title="FisioAcces Integrado"
+        title="FisioAccess"
         icon={<LayoutDashboard className="h-5 w-5" />}
       />
 
@@ -46,16 +46,16 @@ export function Dashboard() {
           <Link key={to} to={to} className="group">
             <div
               className={cn(
-                "rounded-xl border border-white/5 bg-surface-800/50 p-6 transition-all duration-200",
+                "rounded-xl border border-border bg-surface-800/50 p-6 transition-all duration-200",
                 border,
                 bg,
               )}
             >
               <Icon className={cn("h-10 w-10 mb-4", color)} />
-              <h2 className="text-base font-semibold text-slate-100 mb-1">
+              <h2 className="text-base font-semibold text-primary mb-1">
                 {title}
               </h2>
-              <p className="text-sm text-slate-500">{description}</p>
+              <p className="text-sm text-secondary">{description}</p>
             </div>
           </Link>
         ))}

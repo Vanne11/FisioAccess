@@ -1,4 +1,4 @@
-//! FisioAcces Serial
+//! FisioAccess Serial
 //! 
 //! Módulo de comunicación serial para dispositivos médicos.
 

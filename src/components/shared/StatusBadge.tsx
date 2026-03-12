@@ -10,7 +10,7 @@ const config: Record<Status, { dot: string; text: string; label: string }> = {
   },
   disconnected: {
     dot: "bg-slate-500",
-    text: "text-slate-500",
+    text: "text-secondary",
     label: "Desconectado",
   },
   calibrated: {

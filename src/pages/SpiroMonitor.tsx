@@ -142,7 +142,7 @@ export function SpiroMonitor() {
       <div className="grid grid-cols-3 gap-3 mb-4">
         <Card>
           <CardContent className="text-center">
-            <div className="text-xs text-slate-500 mb-1">Tiempo</div>
+            <div className="text-xs text-secondary mb-1">Tiempo</div>
             <div className="text-2xl font-bold text-spiro-400 font-mono">
               {isTesting ? `${elapsed}s` : "--"}
             </div>
@@ -150,7 +150,7 @@ export function SpiroMonitor() {
         </Card>
         <Card>
           <CardContent className="text-center">
-            <div className="text-xs text-slate-500 mb-1">Estado</div>
+            <div className="text-xs text-secondary mb-1">Estado</div>
             <div className="text-sm font-medium">
               <StatusBadge status={getStatus()} />
             </div>
@@ -158,7 +158,7 @@ export function SpiroMonitor() {
         </Card>
         <Card>
           <CardContent className="text-center">
-            <div className="text-xs text-slate-500 mb-1">Pruebas</div>
+            <div className="text-xs text-secondary mb-1">Pruebas</div>
             <div className="text-2xl font-bold text-spiro-400 font-mono">
               {tests.length}
             </div>
@@ -181,19 +181,19 @@ export function SpiroMonitor() {
         <CardHeader>Pruebas Guardadas ({tests.length})</CardHeader>
         <CardContent>
           {tests.length === 0 ? (
-            <p className="text-sm text-slate-600">No hay pruebas guardadas</p>
+            <p className="text-sm text-muted">No hay pruebas guardadas</p>
           ) : (
             <ul className="space-y-2">
               {tests.map((test) => (
                 <li
                   key={test.id}
-                  className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 transition-colors"
+                  className="flex items-center justify-between p-2 rounded-lg hover:bg-surface-800 transition-colors"
                 >
                   <div className="flex items-center gap-4">
-                    <span className="text-sm font-medium text-slate-200">
+                    <span className="text-sm font-medium text-primary">
                       {test.name}
                     </span>
-                    <span className="text-xs text-slate-500">
+                    <span className="text-xs text-secondary">
                       {test.duration}s
                     </span>
                     <span className="text-xs text-spiro-400">
@@ -204,7 +204,7 @@ export function SpiroMonitor() {
                     onClick={() =>
                       setTests((prev) => prev.filter((t) => t.id !== test.id))
                     }
-                    className="p-1 text-slate-600 hover:text-red-400 transition-colors"
+                    className="p-1 text-muted hover:text-red-400 transition-colors"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

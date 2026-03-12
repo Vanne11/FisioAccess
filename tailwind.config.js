@@ -1,7 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
-  darkMode: "class",
   theme: {
     extend: {
       colors: {
@@ -24,12 +23,26 @@ export default {
           600: "#7c3aed",
         },
         surface: {
-          950: "#020617",
-          900: "#0f172a",
-          800: "#1e293b",
-          700: "#334155",
-          600: "#475569",
+          950: "var(--color-surface-950)",
+          900: "var(--color-surface-900)",
+          800: "var(--color-surface-800)",
+          700: "var(--color-surface-700)",
+          600: "var(--color-surface-600)",
         },
+        primary: "var(--color-text-primary)",
+        secondary: "var(--color-text-secondary)",
+        muted: "var(--color-text-muted)",
+        border: "var(--color-border)",
+        "border-hover": "var(--color-border-hover)",
+      },
+      textColor: {
+        primary: "var(--color-text-primary)",
+        secondary: "var(--color-text-secondary)",
+        muted: "var(--color-text-muted)",
+      },
+      borderColor: {
+        border: "var(--color-border)",
+        "border-hover": "var(--color-border-hover)",
       },
       fontFamily: {
         sans: [

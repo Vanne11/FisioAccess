@@ -1,4 +1,4 @@
-//! Tipos compartidos para FisioAcces
+//! Tipos compartidos para FisioAccess
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

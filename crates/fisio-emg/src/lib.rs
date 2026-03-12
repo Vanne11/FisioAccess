@@ -1,4 +1,4 @@
-//! FisioAcces EMG
+//! FisioAccess EMG
 //! 
 //! Módulo de procesamiento de señales de electromiograma (EMG) con calibración.
 

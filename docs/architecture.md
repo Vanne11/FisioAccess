@@ -1,8 +1,8 @@
-# Arquitectura de FisioAcces Integrado
+# Arquitectura de FisioAccess
 
 ## Visión General
 
-FisioAcces Integrado es una aplicación multiplataforma para el monitoreo de señales médicas (ECG, EMG, Espirómetro) construida con **Tauri 2.0**, **Rust** y **React/TypeScript**.
+FisioAccess es una aplicación multiplataforma para el monitoreo de señales médicas (ECG, EMG, Espirómetro) construida con **Tauri 2.0**, **Rust** y **React/TypeScript**.
 
 ## Arquitectura Modular
 
