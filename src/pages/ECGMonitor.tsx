@@ -10,6 +10,7 @@ import {
   PlugZap,
   Snowflake,
   Download,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardContent } from "@/components/ui/Card";
@@ -48,7 +49,7 @@ const ZOOM_STEPS = [0.5, 1, 2, 4, 8] as const;
 const BUFFER_SIZE = 50000;
 
 export function ECGMonitor() {
-  const serial = useSerial(9600, BUFFER_SIZE);
+  const serial = useSerial(115200, BUFFER_SIZE);
   const [sweepSpeed, setSweepSpeed] = useState<number>(25);
   const [frozen, setFrozen] = useState(false);
   const [zoomIdx, setZoomIdx] = useState(3);
@@ -123,10 +124,7 @@ export function ECGMonitor() {
 
   // --- Conexion ---
   const handleConnect = async () => {
-    serial.clearData();
-    srDetectorRef.current.reset();
     setFrozen(false);
-    setMarkers([]);
     await serial.connect();
   };
 
@@ -143,6 +141,13 @@ export function ECGMonitor() {
       setFrozen(false);
       serial.startRecording();
     }
+  }, [serial]);
+
+  const handleClearData = useCallback(() => {
+    serial.clearData();
+    srDetectorRef.current.reset();
+    setFrozen(false);
+    setMarkers([]);
   }, [serial]);
 
   const handleFreeze = useCallback(() => setFrozen((f) => !f), []);
@@ -261,7 +266,7 @@ export function ECGMonitor() {
       : frozen ? "Congelado" : "Conectado";
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col h-full min-w-0 overflow-hidden">
       <PageHeader
         title="Monitor ECG"
         icon={<Heart className="h-5 w-5 text-ecg-400" />}
@@ -295,6 +300,9 @@ export function ECGMonitor() {
           <Button onClick={handlePlayStop} disabled={!serial.isConnected} variant={serial.recording ? "danger" : "primary"}>
             {serial.recording ? (<><Pause className="h-4 w-4 mr-1" />Stop</>) : (<><Play className="h-4 w-4 mr-1" />Play</>)}
           </Button>
+          <Button onClick={handleClearData} disabled={serial.data.length === 0} variant="ghost" title="Limpiar registro">
+            <Trash2 className="h-4 w-4 mr-1" />Limpiar
+          </Button>
 
           <div className="h-6 w-px bg-surface-600" />
 
@@ -313,9 +321,9 @@ export function ECGMonitor() {
       </Card>
 
       {/* Grafico + Panel lateral */}
-      <div className="grid grid-cols-[1fr_200px] gap-3 flex-1 min-h-0">
+      <div className="grid grid-cols-[minmax(0,1fr)_200px] gap-3 flex-1 min-h-0">
         {/* Canvas */}
-        <Card className="flex flex-col min-h-0">
+        <Card className="flex flex-col min-h-0 min-w-0 overflow-hidden">
           <CardHeader>
             <div className="flex items-center justify-between w-full">
               <span>Senal ECG</span>
