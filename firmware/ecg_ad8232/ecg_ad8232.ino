@@ -65,12 +65,8 @@ void loop() {
   bool leadsOff = (digitalRead(PIN_LO_PLUS) == HIGH) ||
                   (digitalRead(PIN_LO_MINUS) == HIGH);
 
-  if (leadsOff) {
-    // Indicar electrodos desconectados (el backend ignora lineas no numericas)
-    Serial.println("!");
-  } else {
     // Leer valor analogico (0-4095 para ADC 12 bits)
     int value = analogRead(PIN_ECG_OUTPUT);
     Serial.println(value);
-  }
+
 }

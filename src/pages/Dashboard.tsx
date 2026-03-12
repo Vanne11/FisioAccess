@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Heart, Activity, Wind, LayoutDashboard } from "lucide-react";
+import { Heart, BicepsFlexed, Wind, LayoutDashboard } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { cn } from "@/lib/utils";
 
@@ -15,7 +15,7 @@ const modules = [
   },
   {
     to: "/emg",
-    icon: Activity,
+    icon: BicepsFlexed,
     title: "Monitor EMG",
     description: "Electromiograma - Monitoreo de actividad muscular",
     color: "text-emg-400",

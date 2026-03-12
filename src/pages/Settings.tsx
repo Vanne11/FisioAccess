@@ -1,8 +1,18 @@
-import { Settings as SettingsIcon, Check, FolderOpen } from "lucide-react";
+import {
+  Settings as SettingsIcon,
+  Check,
+  FolderOpen,
+  Building2,
+  UserRound,
+  ImagePlus,
+  X,
+} from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { readFile } from "@tauri-apps/plugin-fs";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useThemeStore, type Theme } from "@/stores/useThemeStore";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
+import { useReportStore } from "@/stores/useReportStore";
 import { cn } from "@/lib/utils";
 
 const themes: {
@@ -57,9 +67,37 @@ const themes: {
   },
 ];
 
+function InputField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs text-secondary mb-1.5">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 rounded-lg border border-border bg-surface-800/50 text-sm text-primary placeholder:text-muted focus:outline-none focus:border-ecg-500/50 transition-colors"
+      />
+    </div>
+  );
+}
+
 export function Settings() {
   const { theme, setTheme } = useThemeStore();
   const { workDir, setWorkDir } = useWorkspaceStore();
+  const { config, updateConfig } = useReportStore();
 
   const handleSelectFolder = async () => {
     const selected = await open({
@@ -72,8 +110,28 @@ export function Settings() {
     }
   };
 
+  const handleSelectLogo = async () => {
+    const selected = await open({
+      multiple: false,
+      title: "Seleccionar logo",
+      filters: [
+        { name: "Imagenes", extensions: ["png", "jpg", "jpeg", "webp"] },
+      ],
+    });
+    if (selected) {
+      const bytes = await readFile(selected);
+      const ext = selected.split(".").pop()?.toLowerCase() || "png";
+      const mime =
+        ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+      const base64 = btoa(
+        bytes.reduce((data, byte) => data + String.fromCharCode(byte), ""),
+      );
+      updateConfig({ clinicLogo: `data:${mime};base64,${base64}` });
+    }
+  };
+
   return (
-    <div>
+    <div className="overflow-y-auto flex-1 pr-2">
       <PageHeader
         title="Configuracion"
         icon={<SettingsIcon className="h-5 w-5" />}
@@ -111,6 +169,121 @@ export function Settings() {
               No se ha seleccionado ninguna carpeta
             </p>
           )}
+        </div>
+      </section>
+
+      {/* Datos del informe */}
+      <section className="mb-8">
+        <h2 className="text-sm font-semibold text-primary mb-1">
+          Datos del informe
+        </h2>
+        <p className="text-sm text-secondary mb-4">
+          Informacion base que aparecera en todos los informes generados
+        </p>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Centro / Clínica */}
+          <div className="rounded-xl border border-border p-5 space-y-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Building2 className="h-4 w-4 text-ecg-400" />
+              <h3 className="text-sm font-medium text-primary">
+                Centro / Clinica
+              </h3>
+            </div>
+
+            {/* Logo */}
+            <div>
+              <label className="block text-xs text-secondary mb-1.5">
+                Logo
+              </label>
+              <div className="flex items-center gap-3">
+                {config.clinicLogo ? (
+                  <div className="relative group">
+                    <img
+                      src={config.clinicLogo}
+                      alt="Logo"
+                      className="h-16 w-16 rounded-lg object-contain border border-border bg-surface-800/50"
+                    />
+                    <button
+                      onClick={() => updateConfig({ clinicLogo: "" })}
+                      className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleSelectLogo}
+                    className="h-16 w-16 rounded-lg border border-dashed border-border hover:border-border-hover bg-surface-800/30 flex items-center justify-center transition-colors"
+                  >
+                    <ImagePlus className="h-5 w-5 text-muted" />
+                  </button>
+                )}
+                {config.clinicLogo && (
+                  <button
+                    onClick={handleSelectLogo}
+                    className="text-xs text-secondary hover:text-primary transition-colors"
+                  >
+                    Cambiar
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <InputField
+              label="Nombre del centro"
+              value={config.clinicName}
+              onChange={(v) => updateConfig({ clinicName: v })}
+              placeholder="Ej: Centro de Fisioterapia..."
+            />
+            <InputField
+              label="Direccion"
+              value={config.clinicAddress}
+              onChange={(v) => updateConfig({ clinicAddress: v })}
+              placeholder="Ej: Calle Mayor 1, Madrid"
+            />
+            <InputField
+              label="Telefono"
+              value={config.clinicPhone}
+              onChange={(v) => updateConfig({ clinicPhone: v })}
+              placeholder="Ej: +34 600 000 000"
+              type="tel"
+            />
+            <InputField
+              label="Correo electronico"
+              value={config.clinicEmail}
+              onChange={(v) => updateConfig({ clinicEmail: v })}
+              placeholder="Ej: contacto@clinica.com"
+              type="email"
+            />
+          </div>
+
+          {/* Profesional */}
+          <div className="rounded-xl border border-border p-5 space-y-4">
+            <div className="flex items-center gap-2 mb-1">
+              <UserRound className="h-4 w-4 text-emg-400" />
+              <h3 className="text-sm font-medium text-primary">Profesional</h3>
+            </div>
+
+            <InputField
+              label="Nombre completo"
+              value={config.professionalName}
+              onChange={(v) => updateConfig({ professionalName: v })}
+              placeholder="Ej: Dr. Juan Garcia"
+            />
+            <InputField
+              label="Titulo / Especialidad"
+              value={config.professionalTitle}
+              onChange={(v) => updateConfig({ professionalTitle: v })}
+              placeholder="Ej: Fisioterapeuta"
+            />
+            <InputField
+              label="Numero de colegiado"
+              value={config.professionalLicense}
+              onChange={(v) => updateConfig({ professionalLicense: v })}
+              placeholder="Ej: 12345"
+            />
+          </div>
         </div>
       </section>
 

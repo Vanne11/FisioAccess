@@ -1,6 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import {
-  Activity,
+  BicepsFlexed,
   Heart,
   Wind,
   LayoutDashboard,
@@ -19,7 +19,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/ecg", icon: Heart, label: "ECG", color: "text-ecg-400" },
-  { to: "/emg", icon: Activity, label: "EMG", color: "text-emg-400" },
+  { to: "/emg", icon: BicepsFlexed, label: "EMG", color: "text-emg-400" },
   { to: "/spiro", icon: Wind, label: "Espiro", color: "text-spiro-400" },
 ];
 

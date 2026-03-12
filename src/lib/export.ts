@@ -304,11 +304,51 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
     }
   }
 
+  // Detectar gaps temporales (pausas)
+  const gapThreshold = 500;
+  const gaps: { x1: number; x2: number; durationMs: number }[] = [];
+  for (let i = 1; i < data.length; i++) {
+    const dt = data[i].timestamp_ms - data[i - 1].timestamp_ms;
+    if (dt > gapThreshold) {
+      gaps.push({
+        x1: tsToX(data[i - 1].timestamp_ms),
+        x2: tsToX(data[i].timestamp_ms),
+        durationMs: dt,
+      });
+    }
+  }
+
   // Trazo ECG
   ctx.save();
   ctx.beginPath();
   ctx.rect(MARGIN_LEFT, 0, canvasW - MARGIN_LEFT, canvasH);
   ctx.clip();
+
+  // Indicadores de gap
+  for (const gap of gaps) {
+    const gx1 = Math.max(MARGIN_LEFT, gap.x1);
+    const gx2 = Math.min(canvasW, gap.x2);
+    ctx.fillStyle = "rgba(100, 116, 139, 0.06)";
+    ctx.fillRect(gx1, 0, gx2 - gx1, canvasH);
+    ctx.strokeStyle = "rgba(100, 116, 139, 0.25)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(gx1, 0); ctx.lineTo(gx1, canvasH);
+    ctx.moveTo(gx2, 0); ctx.lineTo(gx2, canvasH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (gx2 - gx1 > 30) {
+      const durLabel = gap.durationMs >= 1000
+        ? `${(gap.durationMs / 1000).toFixed(1)}s`
+        : `${gap.durationMs.toFixed(0)}ms`;
+      ctx.fillStyle = "rgba(100, 116, 139, 0.5)";
+      ctx.font = "10px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(`PAUSA ${durLabel}`, (gx1 + gx2) / 2, canvasH / 2);
+    }
+  }
 
   ctx.strokeStyle = "#000000";
   ctx.lineWidth = 1.5;
@@ -317,11 +357,14 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   ctx.beginPath();
 
   let started = false;
+  let prevTs = -1;
   for (const pt of data) {
     const x = tsToX(pt.timestamp_ms);
     const y = valueToY(pt.value);
-    if (!started) { ctx.moveTo(x, y); started = true; }
+    const isGap = prevTs >= 0 && pt.timestamp_ms - prevTs > gapThreshold;
+    if (!started || isGap) { ctx.moveTo(x, y); started = true; }
     else ctx.lineTo(x, y);
+    prevTs = pt.timestamp_ms;
   }
   ctx.stroke();
 

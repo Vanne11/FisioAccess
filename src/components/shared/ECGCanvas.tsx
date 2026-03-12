@@ -317,11 +317,63 @@ export function ECGCanvas({
       ctx.fillRect(Math.max(MARGIN_LEFT, x1), 0, Math.min(w, x2) - Math.max(MARGIN_LEFT, x1), chartH);
     }
 
+    // --- Detectar gaps temporales (pausas) ---
+    const expectedDt = sampleRate > 10 ? 1000 / sampleRate : 20;
+    const gapThreshold = Math.max(500, expectedDt * 10);
+    const gaps: { x1: number; x2: number; durationMs: number }[] = [];
+    {
+      let prevTs = -1;
+      for (let i = startIdx; i < data.length; i++) {
+        const pt = data[i];
+        if (pt.timestamp_ms > endTs) break;
+        if (pt.timestamp_ms < startTs) { prevTs = pt.timestamp_ms; continue; }
+        if (prevTs >= 0 && pt.timestamp_ms - prevTs > gapThreshold) {
+          gaps.push({
+            x1: tsToX(prevTs),
+            x2: tsToX(pt.timestamp_ms),
+            durationMs: pt.timestamp_ms - prevTs,
+          });
+        }
+        prevTs = pt.timestamp_ms;
+      }
+    }
+
     // --- Trazo ECG (con clip) ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(MARGIN_LEFT, 0, w - MARGIN_LEFT, chartH);
     ctx.clip();
+
+    // Dibujar indicadores de gap (fondo)
+    for (const gap of gaps) {
+      const gx1 = Math.max(MARGIN_LEFT, gap.x1);
+      const gx2 = Math.min(w, gap.x2);
+      ctx.fillStyle = "rgba(100, 116, 139, 0.08)";
+      ctx.fillRect(gx1, 0, gx2 - gx1, chartH);
+      // Lineas punteadas en los bordes del gap
+      ctx.strokeStyle = "rgba(100, 116, 139, 0.3)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(gx1, 0); ctx.lineTo(gx1, chartH);
+      ctx.moveTo(gx2, 0); ctx.lineTo(gx2, chartH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Label de duración de la pausa
+      const mx = (gx1 + gx2) / 2;
+      if (gx2 - gx1 > 30) {
+        const durLabel = gap.durationMs >= 60000
+          ? `${(gap.durationMs / 60000).toFixed(1)}m`
+          : gap.durationMs >= 1000
+            ? `${(gap.durationMs / 1000).toFixed(1)}s`
+            : `${gap.durationMs.toFixed(0)}ms`;
+        ctx.fillStyle = "rgba(100, 116, 139, 0.6)";
+        ctx.font = "9px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(`⏸ ${durLabel}`, mx, chartH / 2);
+      }
+    }
 
     ctx.strokeStyle = theme.trace;
     ctx.lineWidth = 1.5;
@@ -330,14 +382,17 @@ export function ECGCanvas({
     ctx.beginPath();
 
     let started = false;
+    let prevTsTrace = -1;
     for (let i = startIdx; i < data.length; i++) {
       const pt = data[i];
       if (pt.timestamp_ms > endTs) break;
-      if (pt.timestamp_ms < startTs) continue;
+      if (pt.timestamp_ms < startTs) { prevTsTrace = pt.timestamp_ms; continue; }
       const x = tsToX(pt.timestamp_ms);
       const y = valueToY(pt.value);
-      if (!started) { ctx.moveTo(x, y); started = true; }
+      const isGap = prevTsTrace >= 0 && pt.timestamp_ms - prevTsTrace > gapThreshold;
+      if (!started || isGap) { ctx.moveTo(x, y); started = true; }
       else ctx.lineTo(x, y);
+      prevTsTrace = pt.timestamp_ms;
     }
     ctx.stroke();
 
@@ -346,14 +401,17 @@ export function ECGCanvas({
     ctx.globalAlpha = 0.1;
     ctx.beginPath();
     started = false;
+    prevTsTrace = -1;
     for (let i = startIdx; i < data.length; i++) {
       const pt = data[i];
       if (pt.timestamp_ms > endTs) break;
-      if (pt.timestamp_ms < startTs) continue;
+      if (pt.timestamp_ms < startTs) { prevTsTrace = pt.timestamp_ms; continue; }
       const x = tsToX(pt.timestamp_ms);
       const y = valueToY(pt.value);
-      if (!started) { ctx.moveTo(x, y); started = true; }
+      const isGap = prevTsTrace >= 0 && pt.timestamp_ms - prevTsTrace > gapThreshold;
+      if (!started || isGap) { ctx.moveTo(x, y); started = true; }
       else ctx.lineTo(x, y);
+      prevTsTrace = pt.timestamp_ms;
     }
     ctx.stroke();
     ctx.globalAlpha = 1;

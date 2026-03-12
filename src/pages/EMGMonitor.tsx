@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity } from "lucide-react";
+import { BicepsFlexed } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardContent } from "@/components/ui/Card";
 import { SerialSelect } from "@/components/shared/SerialSelect";
@@ -60,7 +60,7 @@ export function EMGMonitor() {
     <div>
       <PageHeader
         title="Monitor EMG"
-        icon={<Activity className="h-5 w-5 text-emg-400" />}
+        icon={<BicepsFlexed className="h-5 w-5 text-emg-400" />}
         actions={<StatusBadge status={getStatus()} />}
       />
 

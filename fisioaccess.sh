@@ -21,7 +21,7 @@ err()   { echo -e "${RED}[error]${NC} $*" >&2; }
 
 show_banner() {
   echo -e ""
-  echo -e "  ${BLUE}${BOLD}FisioAccess${NC}"
+  echo -e "  ${BLUE}${BOLD}FisioAccess${NC} ${DIM}v0.1.0${NC}"
   echo -e "  ${DIM}Plataforma de monitoreo biomedico${NC}"
   echo -e ""
 }
@@ -29,41 +29,41 @@ show_banner() {
 show_menu() {
   show_banner
   echo -e "  ${BOLD}DESARROLLO${NC}"
-  echo -e "  ${CYAN}1)${NC} Dev Frontend    ${DIM}- Inicia servidor Vite (solo interfaz web en :1420)${NC}"
-  echo -e "  ${CYAN}2)${NC} Dev Tauri        ${DIM}- Inicia la app completa (frontend + backend Rust)${NC}"
+  echo -e "  ${CYAN}1)${NC} dev              ${DIM}- App completa Tauri (frontend + backend)${NC}"
+  echo -e "  ${CYAN}2)${NC} dev:frontend     ${DIM}- Solo servidor Vite en :1420${NC}"
   echo -e ""
   echo -e "  ${BOLD}COMPILACION${NC}"
-  echo -e "  ${CYAN}3)${NC} Build            ${DIM}- Compila la app para produccion (instalador final)${NC}"
-  echo -e "  ${CYAN}4)${NC} Clean            ${DIM}- Elimina archivos de compilacion (dist/ y target/)${NC}"
+  echo -e "  ${CYAN}3)${NC} build            ${DIM}- Compila la app para produccion${NC}"
+  echo -e "  ${CYAN}4)${NC} clean            ${DIM}- Elimina dist/, target/ y node_modules/.cache${NC}"
+  echo -e "  ${CYAN}5)${NC} install          ${DIM}- Instala dependencias (npm install + cargo fetch)${NC}"
   echo -e ""
   echo -e "  ${BOLD}VERIFICACION${NC}"
-  echo -e "  ${CYAN}5)${NC} Check            ${DIM}- Verifica errores en TypeScript y Rust sin compilar${NC}"
-  echo -e "  ${CYAN}6)${NC} Lint             ${DIM}- Analiza calidad del codigo (Clippy + ESLint)${NC}"
-  echo -e "  ${CYAN}7)${NC} Test             ${DIM}- Ejecuta las pruebas unitarias de Rust${NC}"
+  echo -e "  ${CYAN}6)${NC} check            ${DIM}- Verifica TypeScript y Rust sin compilar${NC}"
+  echo -e "  ${CYAN}7)${NC} lint             ${DIM}- Clippy (Rust) + ESLint (TS) si disponible${NC}"
+  echo -e "  ${CYAN}8)${NC} test             ${DIM}- Ejecuta tests unitarios de Rust${NC}"
   echo -e ""
   echo -e "  ${BOLD}INFORMACION${NC}"
-  echo -e "  ${CYAN}8)${NC} Status           ${DIM}- Muestra versiones, dependencias y puertos serial${NC}"
-  echo -e "  ${CYAN}9)${NC} Logs             ${DIM}- Muestra los logs de Tauri en tiempo real${NC}"
+  echo -e "  ${CYAN}9)${NC} status           ${DIM}- Versiones, dependencias y puertos serial${NC}"
   echo -e ""
   echo -e "  ${CYAN}0)${NC} Salir"
   echo -e ""
 }
 
 cmd_dev() {
-  info "Iniciando servidor Vite en :1420..."
-  npx vite --port 1420
+  info "Iniciando Tauri dev (app completa)..."
+  npm run tauri:dev
 }
 
-cmd_tauri() {
-  info "Iniciando Tauri dev (app completa)..."
-  cd src-tauri && cargo tauri dev
+cmd_dev_frontend() {
+  info "Iniciando servidor Vite en :1420..."
+  npm run dev -- --port 1420
 }
 
 cmd_build() {
   info "Compilando frontend..."
-  npx vite build
+  npm run build
   info "Compilando app Tauri..."
-  cd src-tauri && cargo tauri build
+  npm run tauri:build
   ok "Build completo"
 }
 
@@ -73,20 +73,32 @@ cmd_check() {
   ok "TypeScript OK"
 
   info "Verificando Rust..."
-  cd src-tauri && cargo check
+  (cd src-tauri && cargo check)
   ok "Rust OK"
 }
 
 cmd_test() {
   info "Ejecutando tests de Rust..."
-  cd src-tauri && cargo test
+  (cd src-tauri && cargo test)
   ok "Tests completos"
 }
 
 cmd_clean() {
   info "Eliminando archivos de compilacion..."
-  rm -rf dist/ target/
+  rm -rf dist/
+  rm -rf src-tauri/target/
+  rm -rf node_modules/.cache
   ok "Limpieza completa"
+}
+
+cmd_install() {
+  info "Instalando dependencias npm..."
+  npm install
+  ok "npm OK"
+
+  info "Descargando crates de Rust..."
+  (cd src-tauri && cargo fetch)
+  ok "cargo OK"
 }
 
 cmd_status() {
@@ -100,19 +112,41 @@ cmd_status() {
     err "Node no encontrado"
   fi
 
+  if command -v npm &>/dev/null; then
+    ok "npm $(npm -v)"
+  else
+    err "npm no encontrado"
+  fi
+
   if command -v rustc &>/dev/null; then
     ok "Rust $(rustc --version | awk '{print $2}')"
   else
     err "Rust no encontrado"
   fi
 
+  if command -v cargo &>/dev/null; then
+    ok "Cargo $(cargo --version | awk '{print $2}')"
+  else
+    err "Cargo no encontrado"
+  fi
+
+  echo ""
+
   if [ -d node_modules ]; then
     ok "node_modules instalados"
   else
-    warn "Falta ejecutar: npm install"
+    warn "Falta ejecutar: ./fisioaccess.sh install"
   fi
 
-  if [ -d /dev/serial/by-id/ ]; then
+  if [ -d src-tauri/target ]; then
+    ok "target/ existe (Rust compilado)"
+  else
+    info "target/ no existe (primer build pendiente)"
+  fi
+
+  echo ""
+
+  if [ -d /dev/serial/by-id/ ] && [ "$(ls -A /dev/serial/by-id/ 2>/dev/null)" ]; then
     info "Puertos serial detectados:"
     ls /dev/serial/by-id/ 2>/dev/null | sed 's/^/    /'
   else
@@ -124,59 +158,49 @@ cmd_status() {
 
 cmd_lint() {
   info "Ejecutando Clippy (Rust)..."
-  cd src-tauri && cargo clippy -- -D warnings
+  (cd src-tauri && cargo clippy -- -D warnings)
   ok "Clippy OK"
 
-  cd "$ROOT"
   if [ -f node_modules/.bin/eslint ]; then
     info "Ejecutando ESLint (TypeScript)..."
     npx eslint src/ --ext .ts,.tsx
     ok "ESLint OK"
   else
-    warn "ESLint no instalado"
-  fi
-}
-
-cmd_logs() {
-  local log="src-tauri/tauri.log"
-  if [ -f "$log" ]; then
-    tail -f "$log"
-  else
-    warn "No se encontro archivo de log en $log"
-    info "Los logs de Tauri aparecen en terminal al usar la opcion 2 (Dev Tauri)"
+    warn "ESLint no instalado, saltando"
   fi
 }
 
 run_option() {
   case "$1" in
     1) cmd_dev ;;
-    2) cmd_tauri ;;
+    2) cmd_dev_frontend ;;
     3) cmd_build ;;
     4) cmd_clean ;;
-    5) cmd_check ;;
-    6) cmd_lint ;;
-    7) cmd_test ;;
-    8) cmd_status ;;
-    9) cmd_logs ;;
+    5) cmd_install ;;
+    6) cmd_check ;;
+    7) cmd_lint ;;
+    8) cmd_test ;;
+    9) cmd_status ;;
     0) echo -e "\n  ${GREEN}Hasta luego${NC}\n"; exit 0 ;;
     *) err "Opcion no valida: $1" ;;
   esac
 }
 
-# Si se pasa un argumento, ejecutar directamente (compatibilidad con uso anterior)
+# Uso directo con argumentos: ./fisioaccess.sh dev
 if [ $# -gt 0 ]; then
   case "$1" in
-    dev)    cmd_dev ;;
-    tauri)  cmd_tauri ;;
-    build)  cmd_build ;;
-    check)  cmd_check ;;
-    test)   cmd_test ;;
-    clean)  cmd_clean ;;
-    status) cmd_status ;;
-    lint)   cmd_lint ;;
-    logs)   cmd_logs ;;
-    [0-9])  run_option "$1" ;;
-    *)      err "Comando desconocido: $1"; show_menu; exit 1 ;;
+    dev)          cmd_dev ;;
+    dev:frontend) cmd_dev_frontend ;;
+    build)        cmd_build ;;
+    check)        cmd_check ;;
+    test)         cmd_test ;;
+    clean)        cmd_clean ;;
+    install)      cmd_install ;;
+    status)       cmd_status ;;
+    lint)         cmd_lint ;;
+    help)         show_menu ;;
+    [0-9])        run_option "$1" ;;
+    *)            err "Comando desconocido: $1"; echo ""; echo "  Uso: ./fisioaccess.sh [dev|dev:frontend|build|check|test|clean|install|status|lint|help]"; exit 1 ;;
   esac
   exit 0
 fi
@@ -184,11 +208,11 @@ fi
 # Menu interactivo
 while true; do
   show_menu
-  echo -ne "  ${BOLD}Selecciona una opcion [0-9]:${NC} "
+  echo -ne "  ${BOLD}Selecciona [0-9]:${NC} "
   read -r option
   echo ""
   run_option "$option"
   echo ""
-  echo -ne "  ${DIM}Presiona Enter para volver al menu...${NC}"
+  echo -ne "  ${DIM}Enter para volver al menu...${NC}"
   read -r
 done
