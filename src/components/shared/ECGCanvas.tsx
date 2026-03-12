@@ -3,7 +3,7 @@ import type { ECGMarker, MarkerToolType, QRSComplex } from "@/lib/markers";
 import { MARKER_COLORS, QRS_COLOR } from "@/lib/markers";
 import type { RPeak } from "@/lib/peaks";
 import { createECGScale, type ECGScale } from "@/utils/ecgScale";
-import { toMillivolts, type CalibrationConfig } from "@/utils/signalCalibrator";
+import type { CalibrationConfig } from "@/utils/signalCalibrator";
 
 export interface ECGDataPoint {
   timestamp_ms: number;
@@ -13,7 +13,6 @@ export interface ECGDataPoint {
 interface ECGCanvasProps {
   data: ECGDataPoint[];
   sweepSpeed: number;
-  gain: number;
   frozen: boolean;
   zoom: number;
   markers: ECGMarker[];
@@ -34,6 +33,22 @@ const COLOR_LARGE_GRID = "rgba(200, 50, 50, 0.25)";
 const COLOR_FROZEN_BADGE = "rgba(239, 68, 68, 0.7)";
 const COLOR_RPEAK_DOT = "rgba(239, 68, 68, 0.6)";
 
+/** Pick a "nice" grid interval for the Y axis given a visible range */
+function niceGridInterval(range: number): { small: number; large: number } {
+  if (range <= 0) return { small: 0.1, large: 0.5 };
+  const targetDivisions = 20;
+  const rawInterval = range / targetDivisions;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawInterval)));
+  const normalized = rawInterval / magnitude;
+  let nice: number;
+  if (normalized <= 1) nice = 1;
+  else if (normalized <= 2) nice = 2;
+  else if (normalized <= 5) nice = 5;
+  else nice = 10;
+  const small = nice * magnitude;
+  return { small, large: small * 5 };
+}
+
 function getThemeColors() {
   const s = getComputedStyle(document.documentElement);
   const get = (v: string, fb: string) => s.getPropertyValue(v).trim() || fb;
@@ -49,7 +64,6 @@ function getThemeColors() {
 export function ECGCanvas({
   data,
   sweepSpeed = 25,
-  gain = 10,
   frozen = false,
   zoom = 1,
   markers,
@@ -78,12 +92,12 @@ export function ECGCanvas({
   const getVisibleMs = useCallback(
     (canvasWidth: number) => {
       const scale = createECGScale({
-        sweepSpeed, gain, zoom,
+        sweepSpeed, zoom,
         canvasWidth, canvasHeight: 100, marginLeft: MARGIN_LEFT,
       });
       return scale.visibleDurationMs;
     },
-    [sweepSpeed, gain, zoom],
+    [sweepSpeed, zoom],
   );
 
   const getTotalMs = useCallback(() => {
@@ -116,58 +130,90 @@ export function ECGCanvas({
     canvas.style.height = `${totalH}px`;
     ctx.scale(dpr, dpr);
 
-    // --- Crear escala ---
+    // --- Crear escala (solo horizontal) ---
     const scale = createECGScale({
-      sweepSpeed, gain, zoom,
+      sweepSpeed, zoom,
       canvasWidth: w, canvasHeight: chartH, marginLeft: MARGIN_LEFT,
     });
     scaleRef.current = scale;
-
-    const rawToMv = (raw: number) => toMillivolts(raw, calibration);
 
     // --- Fondo ---
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, w, totalH);
 
-    // --- Cuadricula alineada a valores redondos ---
-    const { smallMv, largeMv } = scale.getGridMvInterval();
-
-    // Lineas horizontales de voltaje (alineadas a 0mV)
-    const topMv = scale.yToMv(0);
-    const bottomMv = scale.yToMv(chartH);
-
-    // Pequenas
-    ctx.strokeStyle = COLOR_SMALL_GRID;
-    ctx.lineWidth = 0.5;
-    ctx.beginPath();
-    const firstSmallMv = Math.ceil(bottomMv / smallMv) * smallMv;
-    for (let mv = firstSmallMv; mv <= topMv; mv += smallMv) {
-      const y = scale.mvToY(mv);
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-    }
-    ctx.stroke();
-
-    // Grandes
-    ctx.strokeStyle = COLOR_LARGE_GRID;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    const firstLargeMv = Math.ceil(bottomMv / largeMv) * largeMv;
-    for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
-      const y = scale.mvToY(mv);
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-    }
-    ctx.stroke();
-
-    // Determinar rango temporal visible
+    // --- Determinar rango temporal visible ---
     const offset = frozen ? scrollOffsetMs : 0;
     const lastTs = data.length >= 2 ? data[data.length - 1].timestamp_ms : 0;
     const endTs = lastTs - offset;
     const startTs = endTs - scale.visibleDurationMs;
     viewStartRef.current = startTs;
 
-    // Lineas verticales de tiempo (alineadas a valores redondos)
+    // --- Busqueda binaria del rango visible ---
+    let lo = 0;
+    let hi = data.length - 1;
+    if (data.length >= 2) {
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (data[mid].timestamp_ms < startTs) lo = mid + 1;
+        else hi = mid;
+      }
+    }
+    const startIdx = Math.max(0, lo - 1);
+
+    // --- Auto-escala Y: min/max de datos visibles ---
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    if (data.length >= 2) {
+      for (let i = startIdx; i < data.length; i++) {
+        const pt = data[i];
+        if (pt.timestamp_ms > endTs) break;
+        if (pt.timestamp_ms < startTs) continue;
+        if (pt.value < yMin) yMin = pt.value;
+        if (pt.value > yMax) yMax = pt.value;
+      }
+    }
+    if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
+      // Fallback: centrar en 0 con rango ±1
+      yMin = -1;
+      yMax = 1;
+    }
+    // Margen 10% arriba y abajo → señal ocupa ~80%
+    const yRange = yMax - yMin;
+    const yMargin = yRange * 0.1;
+    yMin -= yMargin;
+    yMax += yMargin;
+
+    const valueToY = (v: number) => chartH - ((v - yMin) / (yMax - yMin)) * chartH;
+
+    // --- Cuadricula Y: intervalos dinámicos según rango visible ---
+    const { small: smallMv, large: largeMv } = niceGridInterval(yMax - yMin);
+
+    // Lineas horizontales (voltaje)
+    if (smallMv > 0) {
+      ctx.strokeStyle = COLOR_SMALL_GRID;
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      const firstSmallMv = Math.ceil(yMin / smallMv) * smallMv;
+      for (let mv = firstSmallMv; mv <= yMax; mv += smallMv) {
+        const y = valueToY(mv);
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = COLOR_LARGE_GRID;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const firstLargeMv = Math.ceil(yMin / largeMv) * largeMv;
+      for (let mv = firstLargeMv; mv <= yMax; mv += largeMv) {
+        const y = valueToY(mv);
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+    }
+
+    // --- Cuadricula X: lineas verticales de tiempo ---
     const { smallMs, largeMs } = scale.getGridTimeInterval();
 
     ctx.strokeStyle = COLOR_SMALL_GRID;
@@ -182,7 +228,6 @@ export function ECGCanvas({
         ctx.lineTo(x, chartH);
       }
     } else {
-      // Sin datos: cuadricula regular
       for (let x = MARGIN_LEFT; x <= w; x += scale.gridSmallPx) {
         ctx.moveTo(x, 0); ctx.lineTo(x, chartH);
       }
@@ -207,42 +252,19 @@ export function ECGCanvas({
     }
     ctx.stroke();
 
-    // --- Etiquetas eje Y (mV) ---
-    ctx.fillStyle = theme.label;
-    ctx.font = "10px monospace";
-    ctx.textAlign = "right";
-    ctx.textBaseline = "middle";
-    for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
-      const y = scale.mvToY(mv);
-      if (y < 8 || y > chartH - 8) continue;
-      const label = Math.abs(mv) < 0.001 ? "0" : mv.toFixed(1);
-      ctx.fillText(label, MARGIN_LEFT - 4, y);
-    }
-
-    // --- Marcador de calibracion: barra 1mV en margen izquierdo ---
-    const bar1mvH = scale.pxPerMv * 1; // 1mV en pixeles
-    if (bar1mvH > 4 && bar1mvH < chartH * 0.8) {
-      const barX = 6;
-      const barCenterY = chartH / 2;
-      ctx.strokeStyle = theme.label;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(barX, barCenterY + bar1mvH / 2);
-      ctx.lineTo(barX, barCenterY - bar1mvH / 2);
-      ctx.stroke();
-      // Serifs
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(barX - 3, barCenterY + bar1mvH / 2);
-      ctx.lineTo(barX + 3, barCenterY + bar1mvH / 2);
-      ctx.moveTo(barX - 3, barCenterY - bar1mvH / 2);
-      ctx.lineTo(barX + 3, barCenterY - bar1mvH / 2);
-      ctx.stroke();
+    // --- Etiquetas eje Y (valores reales) ---
+    if (largeMv > 0) {
       ctx.fillStyle = theme.label;
-      ctx.font = "8px monospace";
-      ctx.textAlign = "center";
+      ctx.font = "10px monospace";
+      ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      ctx.fillText("1mV", barX, barCenterY);
+      const firstLargeMv = Math.ceil(yMin / largeMv) * largeMv;
+      for (let mv = firstLargeMv; mv <= yMax; mv += largeMv) {
+        const y = valueToY(mv);
+        if (y < 8 || y > chartH - 8) continue;
+        const label = Math.abs(mv) < 0.001 ? "0" : mv.toFixed(2);
+        ctx.fillText(label, MARGIN_LEFT - 4, y);
+      }
     }
 
     // --- Etiqueta escala inferior ---
@@ -251,10 +273,10 @@ export function ECGCanvas({
     ctx.textAlign = "left";
     const zl = zoom !== 1 ? ` | x${zoom.toFixed(1)}` : "";
     const fsLabel = sampleRate > 0 ? ` | ${sampleRate.toFixed(0)}Hz` : "";
-    ctx.fillText(`${sweepSpeed}mm/s | ${gain}mm/mV${zl}${fsLabel}`, MARGIN_LEFT, chartH - 6);
+    ctx.fillText(`${sweepSpeed}mm/s${zl}${fsLabel}`, MARGIN_LEFT, chartH - 6);
 
     // --- Barra de referencia 1s en esquina inferior derecha ---
-    const bar1sW = scale.pxPerMs * 1000; // 1 segundo en pixeles
+    const bar1sW = scale.pxPerMs * 1000;
     if (bar1sW > 10 && bar1sW < w * 0.5) {
       const barY = chartH - 14;
       const barEndX = w - 10;
@@ -283,18 +305,7 @@ export function ECGCanvas({
 
     if (data.length < 2) return;
 
-    // --- Busqueda binaria del rango visible ---
-    let lo = 0;
-    let hi = data.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (data[mid].timestamp_ms < startTs) lo = mid + 1;
-      else hi = mid;
-    }
-    const startIdx = Math.max(0, lo - 1);
-
     const tsToX = (ts: number) => scale.timeToX(ts, startTs);
-    const valueToY = (raw: number) => scale.mvToY(rawToMv(raw));
 
     // --- Marcadores de intervalo (fondo) ---
     for (const m of markers) {
@@ -447,7 +458,7 @@ export function ECGCanvas({
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       const { largeMs: timeLargeMs } = scale.getGridTimeInterval();
-      const labelInterval = timeLargeMs * 5; // cada 5 cuadros grandes = 1s a 25mm/s
+      const labelInterval = timeLargeMs * 5;
       const firstLabel = Math.ceil(startTs / labelInterval) * labelInterval;
       for (let t = firstLabel; t <= endTs; t += labelInterval) {
         const x = tsToX(t);
@@ -487,7 +498,7 @@ export function ECGCanvas({
         ctx.fill();
       }
     }
-  }, [data, sweepSpeed, gain, frozen, zoom, scrollOffsetMs, markers, qrsComplexes, rPeaks, calibration, sampleRate, getTotalMs]);
+  }, [data, sweepSpeed, frozen, zoom, scrollOffsetMs, markers, qrsComplexes, rPeaks, calibration, sampleRate, getTotalMs]);
 
   useEffect(() => {
     rafRef.current = requestAnimationFrame(draw);

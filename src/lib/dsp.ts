@@ -92,11 +92,11 @@ export interface FilterConfig {
 }
 
 export const DEFAULT_FILTER_CONFIG: FilterConfig = {
-  notchEnabled: true,
+  notchEnabled: false,
   notchFreq: 50,
-  highpassEnabled: true,
+  highpassEnabled: false,
   highpassFreq: 0.05,
-  lowpassEnabled: true,
+  lowpassEnabled: false,
   lowpassFreq: 40,
 };
 

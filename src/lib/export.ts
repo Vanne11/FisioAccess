@@ -2,8 +2,7 @@ import type { ECGDataPoint } from "@/components/shared/ECGCanvas";
 import type { ECGMarker, QRSComplex } from "@/lib/markers";
 import { MARKER_COLORS, QRS_COLOR } from "@/lib/markers";
 import type { RPeak } from "@/lib/peaks";
-import { createECGScale } from "@/utils/ecgScale";
-import { toMillivolts, type CalibrationConfig, DEFAULT_CALIBRATION } from "@/utils/signalCalibrator";
+import type { CalibrationConfig } from "@/utils/signalCalibrator";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 
@@ -18,7 +17,6 @@ const COLOR_RPEAK_DOT = "rgba(239, 68, 68, 0.6)";
 interface ExportOptions {
   data: ECGDataPoint[];
   sweepSpeed: number;
-  gain: number;
   markers: ECGMarker[];
   qrsComplexes: QRSComplex[];
   rPeaks: RPeak[];
@@ -28,13 +26,29 @@ interface ExportOptions {
   includeMarkers: boolean;
 }
 
+/** Pick a "nice" grid interval for the Y axis given a visible range */
+function niceGridInterval(range: number): { small: number; large: number } {
+  if (range <= 0) return { small: 0.1, large: 0.5 };
+  const targetDivisions = 20;
+  const rawInterval = range / targetDivisions;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawInterval)));
+  const normalized = rawInterval / magnitude;
+  let nice: number;
+  if (normalized <= 1) nice = 1;
+  else if (normalized <= 2) nice = 2;
+  else if (normalized <= 5) nice = 5;
+  else nice = 10;
+  const small = nice * magnitude;
+  return { small, large: small * 5 };
+}
+
 function drawInfoPanel(
   ctx: CanvasRenderingContext2D,
   opts: ExportOptions,
   canvasW: number,
   totalDataMs: number,
 ) {
-  const { markers, qrsComplexes, rPeaks, bpm, sampleRate, sweepSpeed, gain, data } = opts;
+  const { markers, qrsComplexes, rPeaks, bpm, sampleRate, sweepSpeed, data } = opts;
 
   const panelW = 220;
   const lineH = 15;
@@ -52,7 +66,7 @@ function drawInfoPanel(
   lines.push({ label: "Muestras", value: String(data.length) });
   lines.push({ label: "Fs", value: sampleRate > 0 ? `${sampleRate.toFixed(0)} Hz` : "--" });
   lines.push({ label: "Velocidad", value: `${sweepSpeed} mm/s` });
-  lines.push({ label: "Ganancia", value: `${gain} mm/mV` });
+  lines.push({ label: "Escala Y", value: "Auto" });
 
   if (rPeaks.length > 0) {
     lines.push({ label: "R-peaks", value: String(rPeaks.length), color: "#ef4444" });
@@ -152,11 +166,9 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   const {
     data,
     sweepSpeed,
-    gain,
     markers,
     qrsComplexes,
     rPeaks,
-    calibration,
     includeMarkers,
   } = opts;
 
@@ -177,52 +189,61 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   canvas.height = canvasH;
   const ctx = canvas.getContext("2d")!;
 
-  const pxPerMv = pxPerMm * gain;
-  const baselineY = canvasH / 2;
-  const rawToMv = (raw: number) => toMillivolts(raw, calibration);
-  const mvToY = (mv: number) => baselineY - mv * pxPerMv;
-  const valueToY = (raw: number) => mvToY(rawToMv(raw));
+  // --- Auto-escala Y: min/max de todos los datos ---
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (const pt of data) {
+    if (pt.value < yMin) yMin = pt.value;
+    if (pt.value > yMax) yMax = pt.value;
+  }
+  if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
+    yMin = -1;
+    yMax = 1;
+  }
+  const yRange = yMax - yMin;
+  const yMargin = yRange * 0.1;
+  yMin -= yMargin;
+  yMax += yMargin;
+
+  const valueToY = (v: number) => canvasH - ((v - yMin) / (yMax - yMin)) * canvasH;
 
   const startTs = data[0].timestamp_ms;
+  const endTs = data[data.length - 1].timestamp_ms;
   const tsToX = (ts: number) => MARGIN_LEFT + (ts - startTs) * pxPerMs;
 
-  // Intervalos de cuadricula
-  const smallMv = 1 / gain;
-  const largeMv = smallMv * 5;
+  // Grid intervals
   const smallMs = 1000 / sweepSpeed;
   const largeMs = smallMs * 5;
+  const { small: smallMv, large: largeMv } = niceGridInterval(yMax - yMin);
 
   // Fondo blanco
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvasW, canvasH);
 
-  // Cuadricula horizontal (voltaje, alineada a 0mV)
-  const topMv = (baselineY) / pxPerMv;
-  const bottomMv = -(canvasH - baselineY) / pxPerMv;
+  // Cuadricula horizontal (voltaje, auto-escala)
+  if (smallMv > 0) {
+    ctx.strokeStyle = COLOR_SMALL_GRID;
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    const firstSmallMv = Math.ceil(yMin / smallMv) * smallMv;
+    for (let mv = firstSmallMv; mv <= yMax; mv += smallMv) {
+      const y = valueToY(mv);
+      ctx.moveTo(0, y); ctx.lineTo(canvasW, y);
+    }
+    ctx.stroke();
 
-  ctx.strokeStyle = COLOR_SMALL_GRID;
-  ctx.lineWidth = 0.5;
-  ctx.beginPath();
-  const firstSmallMv = Math.ceil(bottomMv / smallMv) * smallMv;
-  for (let mv = firstSmallMv; mv <= topMv; mv += smallMv) {
-    const y = mvToY(mv);
-    ctx.moveTo(0, y); ctx.lineTo(canvasW, y);
+    ctx.strokeStyle = COLOR_LARGE_GRID;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const firstLargeMv = Math.ceil(yMin / largeMv) * largeMv;
+    for (let mv = firstLargeMv; mv <= yMax; mv += largeMv) {
+      const y = valueToY(mv);
+      ctx.moveTo(0, y); ctx.lineTo(canvasW, y);
+    }
+    ctx.stroke();
   }
-  ctx.stroke();
-
-  ctx.strokeStyle = COLOR_LARGE_GRID;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  const firstLargeMv = Math.ceil(bottomMv / largeMv) * largeMv;
-  for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
-    const y = mvToY(mv);
-    ctx.moveTo(0, y); ctx.lineTo(canvasW, y);
-  }
-  ctx.stroke();
 
   // Cuadricula vertical (tiempo, alineada)
-  const endTs = data[data.length - 1].timestamp_ms;
-
   ctx.strokeStyle = COLOR_SMALL_GRID;
   ctx.lineWidth = 0.5;
   ctx.beginPath();
@@ -245,15 +266,18 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   }
   ctx.stroke();
 
-  // Etiquetas eje Y
-  ctx.fillStyle = "#64748b";
-  ctx.font = "11px monospace";
-  ctx.textAlign = "right";
-  ctx.textBaseline = "middle";
-  for (let mv = firstLargeMv; mv <= topMv; mv += largeMv) {
-    const y = mvToY(mv);
-    if (y < 8 || y > canvasH - 8) continue;
-    ctx.fillText(Math.abs(mv) < 0.001 ? "0" : mv.toFixed(1), MARGIN_LEFT - 4, y);
+  // Etiquetas eje Y (valores reales)
+  if (largeMv > 0) {
+    ctx.fillStyle = "#64748b";
+    ctx.font = "11px monospace";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    const firstLargeMv = Math.ceil(yMin / largeMv) * largeMv;
+    for (let mv = firstLargeMv; mv <= yMax; mv += largeMv) {
+      const y = valueToY(mv);
+      if (y < 8 || y > canvasH - 8) continue;
+      ctx.fillText(Math.abs(mv) < 0.001 ? "0" : mv.toFixed(2), MARGIN_LEFT - 4, y);
+    }
   }
 
   // Etiquetas eje X
@@ -267,30 +291,6 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
     const x = tsToX(t);
     if (x < MARGIN_LEFT || x > canvasW - 10) continue;
     ctx.fillText(`${((t - startTs) / 1000).toFixed(0)}s`, x, canvasH - 14);
-  }
-
-  // Barra de calibracion 1mV
-  const bar1mvH = pxPerMv;
-  if (bar1mvH > 4 && bar1mvH < canvasH * 0.8) {
-    const barX = 8;
-    ctx.strokeStyle = "#64748b";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(barX, baselineY + bar1mvH / 2);
-    ctx.lineTo(barX, baselineY - bar1mvH / 2);
-    ctx.stroke();
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(barX - 3, baselineY + bar1mvH / 2);
-    ctx.lineTo(barX + 3, baselineY + bar1mvH / 2);
-    ctx.moveTo(barX - 3, baselineY - bar1mvH / 2);
-    ctx.lineTo(barX + 3, baselineY - bar1mvH / 2);
-    ctx.stroke();
-    ctx.fillStyle = "#64748b";
-    ctx.font = "8px monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("1mV", barX, baselineY);
   }
 
   // Marcadores de intervalo (fondo)
@@ -416,7 +416,7 @@ function renderECGToCanvas(opts: ExportOptions): HTMLCanvasElement {
   ctx.fillStyle = "#64748b";
   ctx.font = "10px monospace";
   ctx.textAlign = "left";
-  ctx.fillText(`${sweepSpeed} mm/s | ${gain} mm/mV | ${data.length} muestras`, MARGIN_LEFT, canvasH - 2);
+  ctx.fillText(`${sweepSpeed} mm/s | Auto-escala | ${data.length} muestras`, MARGIN_LEFT, canvasH - 2);
 
   if (includeMarkers) {
     drawInfoPanel(ctx, opts, canvasW, totalDataMs);

@@ -37,22 +37,19 @@ import {
 } from "@/lib/markers";
 import { exportECGAsPNG } from "@/lib/export";
 import { SampleRateDetector } from "@/utils/sampleRateDetector";
-import { detectADCType, calibrateFrom1mV } from "@/utils/signalCalibrator";
+import { detectADCType, calibrateFrom1mV, toMillivolts, adcToMvScale } from "@/utils/signalCalibrator";
 import {
   useCalibrationStore,
   selectCalibrationConfig,
 } from "@/stores/useCalibrationStore";
-import { PX_PER_MM } from "@/utils/ecgScale";
 
 const SWEEP_OPTIONS = [12.5, 25, 50] as const;
-const GAIN_OPTIONS = [5, 10, 20, 40] as const;
 const ZOOM_STEPS = [0.5, 1, 2, 4, 8] as const;
 const BUFFER_SIZE = 50000;
 
 export function ECGMonitor() {
   const serial = useSerial(9600, BUFFER_SIZE);
   const [sweepSpeed, setSweepSpeed] = useState<number>(25);
-  const [gain, setGain] = useState<number>(10);
   const [frozen, setFrozen] = useState(false);
   const [zoomIdx, setZoomIdx] = useState(3);
   const [filterConfig, setFilterConfig] = useState<FilterConfig>(DEFAULT_FILTER_CONFIG);
@@ -86,7 +83,8 @@ export function ECGMonitor() {
     }
   }, [serial.data.length, calStore]);
 
-  const sampleRate = srInfo.calibrated ? srInfo.rate : srInfo.rate;
+  // Usar standardRate (estable) cuando esta disponible para evitar reinicio de filtros
+  const sampleRate = srInfo.standardRate > 0 ? srInfo.standardRate : srInfo.rate;
 
   // Marcadores
   const [markers, setMarkers] = useState<ECGMarker[]>([]);
@@ -95,17 +93,26 @@ export function ECGMonitor() {
 
   const zoom = ZOOM_STEPS[zoomIdx];
 
-  // --- Filtrado ---
+  // --- Filtrado + conversion a mV ---
   const filteredData = useMemo(() => {
     const raw = serial.data;
-    if (raw.length < 10) return raw;
+    if (raw.length < 10) {
+      return raw.map((d) => ({ timestamp_ms: d.timestamp_ms, value: toMillivolts(d.value, calibration) }));
+    }
     const anyOn = filterConfig.notchEnabled || filterConfig.highpassEnabled || filterConfig.lowpassEnabled;
-    if (!anyOn) return raw;
-    const fs = sampleRate > 10 ? sampleRate : 80;
+    if (!anyOn) {
+      return raw.map((d) => ({ timestamp_ms: d.timestamp_ms, value: toMillivolts(d.value, calibration) }));
+    }
+    const fs = sampleRate > 10 ? sampleRate : 250;
     const values = raw.map((d) => d.value);
     const filtered = applyFilterChain(values, fs, filterConfig);
-    return raw.map((d, i) => ({ timestamp_ms: d.timestamp_ms, value: filtered[i] }));
-  }, [serial.data, filterConfig, sampleRate]);
+    if (filterConfig.highpassEnabled) {
+      const scale = adcToMvScale(calibration);
+      return raw.map((d, i) => ({ timestamp_ms: d.timestamp_ms, value: filtered[i] * scale }));
+    } else {
+      return raw.map((d, i) => ({ timestamp_ms: d.timestamp_ms, value: toMillivolts(filtered[i], calibration) }));
+    }
+  }, [serial.data, filterConfig, sampleRate, calibration]);
 
   // --- R-peaks y BPM ---
   const rPeaks = useMemo(() => detectRPeaks(filteredData), [filteredData]);
@@ -225,7 +232,6 @@ export function ECGMonitor() {
       await exportECGAsPNG({
         data: exportData,
         sweepSpeed,
-        gain,
         markers: exportMarkers,
         qrsComplexes: exportQrs,
         rPeaks: exportRPeaks,
@@ -239,7 +245,7 @@ export function ECGMonitor() {
     } finally {
       setExporting(false);
     }
-  }, [filteredData, sweepSpeed, gain, markers, qrsComplexes, rPeaks, bpm, sampleRate, calibration, exportSeconds]);
+  }, [filteredData, sweepSpeed, markers, qrsComplexes, rPeaks, bpm, sampleRate, calibration, exportSeconds]);
 
   // --- Metricas ---
   const lastValue = serial.data.length > 0 ? serial.data[serial.data.length - 1].value : null;
@@ -253,11 +259,6 @@ export function ECGMonitor() {
     : serial.recording && !frozen
       ? "Recibiendo"
       : frozen ? "Congelado" : "Conectado";
-
-  // Informacion derivada de la escala
-  const pxPerMs = (PX_PER_MM * sweepSpeed * zoom) / 1000;
-  const visibleSec = (800 / pxPerMs) / 1000; // aprox con ancho tipico
-  const visibleMv = 800 / (PX_PER_MM * gain); // aprox con alto tipico
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -307,18 +308,6 @@ export function ECGMonitor() {
             <span className="text-xs text-secondary self-center ml-1">mm/s</span>
           </div>
 
-          <div className="h-6 w-px bg-surface-600" />
-
-          <label className="text-xs text-secondary">Ganancia:</label>
-          <div className="flex gap-1">
-            {GAIN_OPTIONS.map((g) => (
-              <button key={g} onClick={() => setGain(g)}
-                className={`px-2 py-1 text-xs rounded font-mono transition-colors ${gain === g ? "bg-ecg-500/20 text-ecg-400 ring-1 ring-ecg-500/40" : "bg-surface-700 text-secondary hover:text-primary"}`}
-              >{g}</button>
-            ))}
-            <span className="text-xs text-secondary self-center ml-1">mm/mV</span>
-          </div>
-
           {serial.error && <span className="text-xs text-red-400">{serial.error}</span>}
         </CardContent>
       </Card>
@@ -357,7 +346,6 @@ export function ECGMonitor() {
             <ECGCanvas
               data={filteredData}
               sweepSpeed={sweepSpeed}
-              gain={gain}
               frozen={frozen || !serial.recording}
               zoom={zoom}
               markers={markers}
@@ -411,20 +399,12 @@ export function ECGMonitor() {
                 <span>Grabacion</span>
                 <span className="font-mono text-ecg-400">{totalMin}:{totalSec.toString().padStart(2, "0")}</span>
               </div>
-              <div className="flex justify-between text-xs text-secondary mb-1">
+              <div className="flex justify-between text-xs text-secondary">
                 <span>Fs</span>
                 <span className="font-mono text-ecg-400">
                   {sampleRate > 0 ? `${sampleRate.toFixed(0)} Hz` : "--"}
                   {srInfo.calibrated && <span className="text-green-400 ml-1" title={`Confianza: ${(srInfo.confidence * 100).toFixed(0)}%`}>●</span>}
                 </span>
-              </div>
-              <div className="flex justify-between text-xs text-secondary mb-1">
-                <span>Ventana</span>
-                <span className="font-mono text-ecg-400">{visibleSec.toFixed(1)}s</span>
-              </div>
-              <div className="flex justify-between text-xs text-secondary">
-                <span>Rango</span>
-                <span className="font-mono text-ecg-400">±{(visibleMv / 2).toFixed(1)}mV</span>
               </div>
             </CardContent>
           </Card>
