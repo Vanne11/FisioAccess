@@ -124,4 +124,4 @@ npm test --workspaces
 
 Este software está diseñado exclusivamente para fines de monitoreo. **No debe utilizarse para diagnóstico médico crítico sin la validación de hardware certificado.**
 
-* **Licencia:** Todos los derechos reservados - FISIOACCES.
+* **Licencia:** Todos los derechos reservados - FISIOACCESS.
