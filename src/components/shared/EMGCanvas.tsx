@@ -14,11 +14,39 @@ export interface EMGPhaseMarker {
   endMs: number | null; // null = en curso
 }
 
+export interface EMGPhaseStats {
+  id: string;
+  type: EMGPhaseType;
+  rms: number;
+  peakPositive: number;
+  peakNegative: number;
+  peakToPeak: number;
+  duration: number;
+  count: number;
+  mvcPercent?: number;
+}
+
 export const EMG_PHASE_CONFIG: Record<EMGPhaseType, { label: string; color: string; bg: string }> = {
   reposo:      { label: "Reposo",             color: "#38bdf8", bg: "rgba(56, 189, 248, 0.12)" },
   leve:        { label: "Contracción leve",   color: "#fbbf24", bg: "rgba(251, 191, 36, 0.12)" },
   maxima:      { label: "Contracción máxima", color: "#f87171", bg: "rgba(248, 113, 113, 0.12)" },
   relajacion:  { label: "Relajación",         color: "#4ade80", bg: "rgba(74, 222, 128, 0.12)" },
+};
+
+export const SCALE_PRESETS = [100, 500, 1000, 2000] as const;
+
+export interface ADCConfig {
+  gain: number;       // System gain (default 1200)
+  vref: number;       // ADC voltage reference in mV/LSB (default 0.1875)
+  resolution: number; // ADC bits (default 16)
+  offset: number;     // DC offset in mV (default 666)
+}
+
+export const DEFAULT_ADC_CONFIG: ADCConfig = {
+  gain: 1200,
+  vref: 0.1875,
+  resolution: 16,
+  offset: 666,
 };
 
 interface EMGCanvasProps {
@@ -28,18 +56,25 @@ interface EMGCanvasProps {
   activePhase?: EMGPhaseType | null;
   pendingStartMs?: number | null;
   onCanvasClick?: (timestamp_ms: number) => void;
+  onMarkerUpdate?: (id: string, startMs: number, endMs: number) => void;
+  scalePreset?: number | null; // ±N µV, null = auto
+  showRmsEnvelope?: boolean;
+  showCalBar?: boolean;
   className?: string;
 }
 
 const MARGIN_LEFT = 52;
 const MARGIN_BOTTOM = 24;
 const SCROLLBAR_H = 14;
+const CAL_BAR_W = 8;
+const RMS_WINDOW_MS = 150;
 
 const COLOR_GRID_SMALL = "rgba(245, 158, 11, 0.10)";
 const COLOR_GRID_LARGE = "rgba(245, 158, 11, 0.22)";
 const COLOR_TRACE = "rgba(245, 158, 11, 1)";
 const COLOR_GLOW = "rgba(245, 158, 11, 0.12)";
 const COLOR_ZERO = "rgba(255, 255, 255, 0.15)";
+const COLOR_RMS_ENVELOPE = "rgba(168, 85, 247, 0.65)";
 
 function getThemeColors() {
   const s = getComputedStyle(document.documentElement);
@@ -52,7 +87,6 @@ function getThemeColors() {
   };
 }
 
-/** Intervalo "bonito" para grid */
 function niceInterval(range: number, targetDivs: number): { small: number; large: number } {
   if (range <= 0) return { small: 0.1, large: 0.5 };
   const raw = range / targetDivs;
@@ -67,7 +101,6 @@ function niceInterval(range: number, targetDivs: number): { small: number; large
   return { small, large: small * 5 };
 }
 
-/** Decimales para un step */
 function decFor(step: number): number {
   if (step >= 1) return 0;
   if (step >= 0.1) return 1;
@@ -75,7 +108,6 @@ function decFor(step: number): number {
   return 3;
 }
 
-/** Formatea tiempo relativo */
 function fmtTime(sec: number): string {
   if (sec >= 60) return `${(sec / 60).toFixed(1)}m`;
   if (sec >= 10) return `${sec.toFixed(0)}s`;
@@ -83,12 +115,51 @@ function fmtTime(sec: number): string {
   return `${(sec * 1000).toFixed(0)}ms`;
 }
 
-export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStartMs, onCanvasClick, className }: EMGCanvasProps) {
+/** Compute rolling RMS for visible data points */
+function computeRmsEnvelope(
+  data: EMGDataPoint[],
+  startIdx: number,
+  startTs: number,
+  endTs: number,
+): { timestamp_ms: number; rms: number }[] {
+  const result: { timestamp_ms: number; rms: number }[] = [];
+  const halfWindow = RMS_WINDOW_MS / 2;
+
+  for (let i = startIdx; i < data.length; i++) {
+    const pt = data[i];
+    if (pt.timestamp_ms > endTs) break;
+    if (pt.timestamp_ms < startTs) continue;
+
+    let sumSq = 0;
+    let count = 0;
+    // Look back and forward for window
+    for (let j = i; j >= 0 && data[j].timestamp_ms >= pt.timestamp_ms - halfWindow; j--) {
+      sumSq += data[j].value * data[j].value;
+      count++;
+    }
+    for (let j = i + 1; j < data.length && data[j].timestamp_ms <= pt.timestamp_ms + halfWindow; j++) {
+      sumSq += data[j].value * data[j].value;
+      count++;
+    }
+
+    if (count > 0) {
+      result.push({ timestamp_ms: pt.timestamp_ms, rms: Math.sqrt(sumSq / count) });
+    }
+  }
+  return result;
+}
+
+const EDGE_GRAB_PX = 6;
+
+export function EMGCanvas({
+  data, frozen, markers = [], activePhase, pendingStartMs,
+  onCanvasClick, onMarkerUpdate, scalePreset, showRmsEnvelope, showCalBar,
+  className,
+}: EMGCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
 
-  // Scroll/drag en frozen
   const [scrollMs, setScrollMs] = useState(0);
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
@@ -96,6 +167,10 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
   const pxPerMsRef = useRef(0.1);
   const viewStartRef = useRef(0);
   const didDragRef = useRef(false);
+
+  // Draggable marker edge state
+  const draggingEdge = useRef<{ markerId: string; edge: "start" | "end"; origMs: number } | null>(null);
+  const [cursorStyle, setCursorStyle] = useState<string>("default");
 
   useEffect(() => {
     if (!frozen) setScrollMs(0);
@@ -126,14 +201,10 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
     canvas.style.height = `${fullH}px`;
     ctx.scale(dpr, dpr);
 
-    // Fondo
     ctx.fillStyle = theme.bg;
     ctx.fillRect(0, 0, w, fullH);
 
     const plotW = w - MARGIN_LEFT;
-
-    // Rango temporal visible: últimos N ms
-    // A 100Hz con plotW ~800px queremos ~5s visibles = 5000ms
     const desiredVisibleMs = Math.max(2000, plotW * 6);
     const offset = frozen ? scrollMs : 0;
     const lastTs = data.length >= 2 ? data[data.length - 1].timestamp_ms : 0;
@@ -145,7 +216,7 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
 
     const tsToX = (ts: number) => MARGIN_LEFT + (ts - startTs) * pxPerMs;
 
-    // Buscar rango visible (binaria)
+    // Binary search for start index
     let lo = 0;
     let hi = data.length - 1;
     if (data.length >= 2) {
@@ -157,26 +228,33 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
     }
     const startIdx = Math.max(0, lo - 1);
 
-    // Auto-escala Y
-    let yMin = Infinity;
-    let yMax = -Infinity;
-    if (data.length >= 2) {
-      for (let i = startIdx; i < data.length; i++) {
-        const pt = data[i];
-        if (pt.timestamp_ms > endTs) break;
-        if (pt.timestamp_ms < startTs) continue;
-        if (pt.value < yMin) yMin = pt.value;
-        if (pt.value > yMax) yMax = pt.value;
+    // Y scale: preset or auto
+    let yMin: number;
+    let yMax: number;
+    if (scalePreset != null && scalePreset > 0) {
+      yMin = -scalePreset;
+      yMax = scalePreset;
+    } else {
+      yMin = Infinity;
+      yMax = -Infinity;
+      if (data.length >= 2) {
+        for (let i = startIdx; i < data.length; i++) {
+          const pt = data[i];
+          if (pt.timestamp_ms > endTs) break;
+          if (pt.timestamp_ms < startTs) continue;
+          if (pt.value < yMin) yMin = pt.value;
+          if (pt.value > yMax) yMax = pt.value;
+        }
       }
+      if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
+        yMin = -10;
+        yMax = 10;
+      }
+      const yRange = yMax - yMin;
+      const yPad = yRange * 0.12;
+      yMin -= yPad;
+      yMax += yPad;
     }
-    if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
-      yMin = -10;
-      yMax = 10;
-    }
-    const yRange = yMax - yMin;
-    const yPad = yRange * 0.12;
-    yMin -= yPad;
-    yMax += yPad;
 
     const valueToY = (v: number) => (1 - (v - yMin) / (yMax - yMin)) * plotH;
 
@@ -222,7 +300,7 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
       }
     }
 
-    // Línea base 0
+    // Zero line
     if (yMin <= 0 && yMax >= 0) {
       ctx.strokeStyle = COLOR_ZERO;
       ctx.lineWidth = 1;
@@ -283,14 +361,14 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
       }
     }
 
-    // Unidad Y
+    // Unit label
     ctx.fillStyle = theme.label;
     ctx.font = "9px monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.fillText("µV", 2, 4);
 
-    // Barra de referencia 1s
+    // 1s reference bar
     const bar1sW = pxPerMs * 1000;
     if (bar1sW > 20 && bar1sW < plotW * 0.4) {
       const barY = plotH - 12;
@@ -314,7 +392,62 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
       }
     }
 
-    // --- Marcadores de fase: PASS 1 (solo bandas de fondo, ANTES del trazo) ---
+    // --- Calibration amplitude bar (left margin) ---
+    if (showCalBar) {
+      const calBarX = 6;
+      const calBarTop = 20;
+      const calBarBot = plotH - 8;
+      const calBarH = calBarBot - calBarTop;
+      const totalRange = yMax - yMin;
+
+      // Background
+      ctx.fillStyle = "rgba(245, 158, 11, 0.08)";
+      ctx.fillRect(calBarX, calBarTop, CAL_BAR_W, calBarH);
+
+      // Graduated marks
+      const calSteps = [0.25, 0.5, 0.75];
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.3)";
+      ctx.lineWidth = 0.5;
+      for (const frac of calSteps) {
+        const y = calBarTop + calBarH * (1 - frac);
+        ctx.beginPath();
+        ctx.moveTo(calBarX, y);
+        ctx.lineTo(calBarX + CAL_BAR_W, y);
+        ctx.stroke();
+      }
+
+      // Fill based on signal amplitude (peak-to-peak of visible data)
+      let visMin = Infinity, visMax = -Infinity;
+      for (let i = startIdx; i < data.length; i++) {
+        const pt = data[i];
+        if (pt.timestamp_ms > endTs) break;
+        if (pt.timestamp_ms < startTs) continue;
+        if (pt.value < visMin) visMin = pt.value;
+        if (pt.value > visMax) visMax = pt.value;
+      }
+      if (isFinite(visMin) && isFinite(visMax)) {
+        const pp = visMax - visMin;
+        const fillRatio = Math.min(1, pp / totalRange);
+        const fillH = calBarH * fillRatio;
+        ctx.fillStyle = "rgba(245, 158, 11, 0.4)";
+        ctx.fillRect(calBarX, calBarBot - fillH, CAL_BAR_W, fillH);
+      }
+
+      // Border
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.3)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(calBarX, calBarTop, CAL_BAR_W, calBarH);
+
+      // Scale label
+      ctx.fillStyle = theme.label;
+      ctx.font = "7px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      const scaleLabel = scalePreset ? `±${scalePreset}` : `${totalRange.toFixed(0)}`;
+      ctx.fillText(scaleLabel, calBarX + CAL_BAR_W / 2, calBarBot + 2);
+    }
+
+    // --- Phase markers PASS 1: background bands ---
     for (const m of markers) {
       const cfg = EMG_PHASE_CONFIG[m.type];
       const mStart = m.startMs;
@@ -330,7 +463,7 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
 
     if (data.length < 2) return;
 
-    // --- Trazo EMG ---
+    // --- EMG Trace ---
     ctx.save();
     ctx.beginPath();
     ctx.rect(MARGIN_LEFT, 0, plotW, plotH);
@@ -354,7 +487,7 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
     }
     ctx.stroke();
 
-    // Trace
+    // Main trace
     ctx.strokeStyle = COLOR_TRACE;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -370,7 +503,39 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
     }
     ctx.stroke();
 
-    // --- Marcadores de fase: PASS 2 (anotaciones DESPUÉS del trazo) ---
+    // --- RMS Envelope ---
+    if (showRmsEnvelope) {
+      const envelope = computeRmsEnvelope(data, startIdx, startTs, endTs);
+      if (envelope.length > 1) {
+        ctx.strokeStyle = COLOR_RMS_ENVELOPE;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let envStarted = false;
+        for (const ep of envelope) {
+          const x = tsToX(ep.timestamp_ms);
+          const y = valueToY(ep.rms);
+          if (!envStarted) { ctx.moveTo(x, y); envStarted = true; }
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Also draw mirrored negative
+        ctx.globalAlpha = 0.4;
+        ctx.beginPath();
+        envStarted = false;
+        for (const ep of envelope) {
+          const x = tsToX(ep.timestamp_ms);
+          const y = valueToY(-ep.rms);
+          if (!envStarted) { ctx.moveTo(x, y); envStarted = true; }
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // --- Phase markers PASS 2: annotations ON TOP of trace ---
     for (const m of markers) {
       const cfg = EMG_PHASE_CONFIG[m.type];
       const mStart = m.startMs;
@@ -382,7 +547,7 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
       const cx1 = Math.max(MARGIN_LEFT, x1);
       const cx2 = Math.min(w, x2);
 
-      // Calcular amplitud dentro de la fase
+      // Compute phase stats
       let sumSq = 0;
       let count = 0;
       let phaseMin = Infinity;
@@ -399,10 +564,10 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
       const rmsVal = count > 0 ? Math.sqrt(sumSq / count) : 0;
       const amplitude = isFinite(phaseMax) && isFinite(phaseMin) ? phaseMax - phaseMin : 0;
 
-      // Bordes verticales
+      // Vertical border lines
       ctx.strokeStyle = cfg.color;
-      ctx.lineWidth = 1;
-      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.6;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       if (x1 >= MARGIN_LEFT) { ctx.moveTo(x1, 0); ctx.lineTo(x1, plotH); }
@@ -411,14 +576,39 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
 
-      // Flecha de amplitud pico-a-pico + líneas horizontales prominentes
+      // --- RMS horizontal dashed line ---
+      if (count > 1 && rmsVal > 0) {
+        const yRms = valueToY(rmsVal);
+        const yRmsNeg = valueToY(-rmsVal);
+        ctx.strokeStyle = cfg.color;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.5;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(cx1, yRms); ctx.lineTo(cx2, yRms);
+        ctx.moveTo(cx1, yRmsNeg); ctx.lineTo(cx2, yRmsNeg);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+
+        // RMS value label
+        ctx.fillStyle = cfg.color;
+        ctx.font = "bold 8px monospace";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.globalAlpha = 0.7;
+        ctx.fillText(`RMS ${rmsVal.toFixed(1)}`, cx1 + 3, yRms - 2);
+        ctx.globalAlpha = 1;
+      }
+
+      // --- Peak amplitude lines + arrow ---
       if (count > 1 && isFinite(phaseMin) && isFinite(phaseMax) && amplitude > 0) {
         const arrowX = Math.min(cx2 - 6, w - 6);
         const yTop = valueToY(phaseMax);
         const yBot = valueToY(phaseMin);
 
         if (arrowX > cx1 + 20) {
-          // Líneas horizontales prominentes en min/max (ancho completo de la banda)
+          // Solid horizontal lines at peak+ and peak- (full band width)
           ctx.strokeStyle = cfg.color;
           ctx.lineWidth = 1.5;
           ctx.globalAlpha = 0.7;
@@ -429,7 +619,18 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
           ctx.stroke();
           ctx.globalAlpha = 1;
 
-          // Línea vertical con flechas
+          // Peak value labels at ends
+          ctx.fillStyle = cfg.color;
+          ctx.font = "7px monospace";
+          ctx.globalAlpha = 0.6;
+          ctx.textAlign = "left";
+          ctx.textBaseline = "top";
+          ctx.fillText(`+${phaseMax.toFixed(1)}`, cx1 + 2, yTop + 1);
+          ctx.textBaseline = "bottom";
+          ctx.fillText(`${phaseMin.toFixed(1)}`, cx1 + 2, yBot - 1);
+          ctx.globalAlpha = 1;
+
+          // Vertical arrow connecting min↔max
           ctx.strokeStyle = cfg.color;
           ctx.lineWidth = 1.5;
           ctx.globalAlpha = 0.8;
@@ -437,7 +638,7 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
           ctx.moveTo(arrowX, yTop);
           ctx.lineTo(arrowX, yBot);
           ctx.stroke();
-          // Flechitas
+          // Arrowheads
           const arrSz = 3;
           ctx.beginPath();
           ctx.moveTo(arrowX - arrSz, yTop + arrSz); ctx.lineTo(arrowX, yTop); ctx.lineTo(arrowX + arrSz, yTop + arrSz);
@@ -445,40 +646,50 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
           ctx.stroke();
           ctx.globalAlpha = 1;
 
-          // Valor de amplitud al lado de la flecha
+          // Amplitude value next to arrow
           ctx.fillStyle = cfg.color;
           ctx.font = "bold 9px monospace";
           ctx.textAlign = "right";
           ctx.textBaseline = "middle";
           const midY = (yTop + yBot) / 2;
           ctx.fillText(`${amplitude.toFixed(1)}µV`, arrowX - 5, midY);
+          // P-P label
+          ctx.font = "7px monospace";
+          ctx.globalAlpha = 0.6;
+          ctx.fillText("P-P", arrowX - 5, midY + 10);
+          ctx.globalAlpha = 1;
         }
       }
 
-      // Label superior centrado
+      // --- Phase label + stats at top ---
       const labelX = (cx1 + cx2) / 2;
       if (cx2 - cx1 > 30) {
+        // Background for text readability
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        const textW = Math.min(cx2 - cx1 - 4, 140);
+        ctx.fillRect(labelX - textW / 2, 1, textW, 30);
+
         ctx.fillStyle = cfg.color;
         ctx.font = "bold 9px monospace";
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(cfg.label, labelX, 4);
+        ctx.fillText(cfg.label, labelX, 3);
 
-        // Stats debajo del nombre
+        // Stats line 1: duration + RMS
         const durMs = mEnd - mStart;
-        const parts: string[] = [];
-        if (durMs > 0) parts.push(durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs.toFixed(0)}ms`);
-        if (count > 0) parts.push(`RMS:${rmsVal.toFixed(1)}`);
-        if (parts.length > 0) {
-          ctx.font = "8px monospace";
-          ctx.globalAlpha = 0.75;
-          ctx.fillText(parts.join(" | "), labelX, 16);
-          ctx.globalAlpha = 1;
+        const durStr = durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs.toFixed(0)}ms`;
+        ctx.font = "8px monospace";
+        ctx.globalAlpha = 0.8;
+        ctx.fillText(`${durStr} | RMS:${rmsVal.toFixed(1)}µV`, labelX, 14);
+        // Stats line 2: P-P
+        if (amplitude > 0) {
+          ctx.fillText(`P-P:${amplitude.toFixed(1)}µV`, labelX, 23);
         }
+        ctx.globalAlpha = 1;
       }
     }
 
-    // Línea pendiente de marcaje (primer click hecho, esperando segundo)
+    // Pending marker line
     if (pendingStartMs != null && activePhase) {
       const px = tsToX(pendingStartMs);
       if (px >= MARGIN_LEFT && px <= w) {
@@ -491,12 +702,11 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
         ctx.lineTo(px, plotH);
         ctx.stroke();
         ctx.setLineDash([]);
-        // Label
         ctx.fillStyle = pcfg.color;
         ctx.font = "bold 8px monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "bottom";
-        ctx.fillText("INICIO ▸", px + 3, plotH - 4);
+        ctx.fillText("INICIO \u25B8", px + 3, plotH - 4);
       }
     }
 
@@ -531,7 +741,7 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
         ctx.fill();
       }
     }
-  }, [data, frozen, scrollMs, totalMs, markers, activePhase, pendingStartMs]);
+  }, [data, frozen, scrollMs, totalMs, markers, activePhase, pendingStartMs, scalePreset, showRmsEnvelope, showCalBar]);
 
   // RAF
   useEffect(() => {
@@ -551,7 +761,29 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
     return () => ro.disconnect();
   }, [draw]);
 
-  // Scroll rueda
+  // Find if mouse is near a marker edge
+  const findNearEdge = useCallback((clientX: number): { markerId: string; edge: "start" | "end"; ms: number } | null => {
+    if (!frozen || !containerRef.current) return null;
+    const rect = containerRef.current.getBoundingClientRect();
+    const px = clientX - rect.left;
+
+    for (const m of markers) {
+      if (m.endMs === null) continue;
+      const mEnd = m.endMs;
+      const startX = MARGIN_LEFT + (m.startMs - viewStartRef.current) * pxPerMsRef.current;
+      const endX = MARGIN_LEFT + (mEnd - viewStartRef.current) * pxPerMsRef.current;
+
+      if (Math.abs(px - startX) <= EDGE_GRAB_PX) {
+        return { markerId: m.id, edge: "start", ms: m.startMs };
+      }
+      if (Math.abs(px - endX) <= EDGE_GRAB_PX) {
+        return { markerId: m.id, edge: "end", ms: mEnd };
+      }
+    }
+    return null;
+  }, [frozen, markers]);
+
+  // Wheel scroll
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       if (!frozen || data.length < 2) return;
@@ -569,21 +801,61 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
     [frozen, data, totalMs],
   );
 
-  // Drag + click para marcaje
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!frozen) return;
+
+      // Check for marker edge drag
+      const edge = findNearEdge(e.clientX);
+      if (edge && onMarkerUpdate) {
+        draggingEdge.current = { markerId: edge.markerId, edge: edge.edge, origMs: edge.ms };
+        e.preventDefault();
+        return;
+      }
+
       isDragging.current = true;
       didDragRef.current = false;
       dragStartX.current = e.clientX;
       dragStartOff.current = scrollMs;
       e.preventDefault();
     },
-    [frozen, scrollMs],
+    [frozen, scrollMs, findNearEdge, onMarkerUpdate],
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Handle marker edge dragging
+      if (draggingEdge.current && onMarkerUpdate) {
+        const container = containerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const ts = viewStartRef.current + (px - MARGIN_LEFT) / pxPerMsRef.current;
+        const marker = markers.find(m => m.id === draggingEdge.current!.markerId);
+        if (marker && marker.endMs !== null) {
+          if (draggingEdge.current.edge === "start") {
+            const newStart = Math.min(ts, marker.endMs - 10);
+            onMarkerUpdate(marker.id, newStart, marker.endMs);
+          } else {
+            const newEnd = Math.max(ts, marker.startMs + 10);
+            onMarkerUpdate(marker.id, marker.startMs, newEnd);
+          }
+        }
+        return;
+      }
+
+      // Cursor hint for edges
+      if (!isDragging.current && frozen && onMarkerUpdate) {
+        const edge = findNearEdge(e.clientX);
+        if (edge) {
+          setCursorStyle("col-resize");
+        } else if (activePhase) {
+          setCursorStyle("crosshair");
+        } else {
+          setCursorStyle("grab");
+        }
+      }
+
       if (!isDragging.current || !frozen || data.length < 2) return;
       if (Math.abs(e.clientX - dragStartX.current) > 3) didDragRef.current = true;
       const dtMs = (e.clientX - dragStartX.current) / pxPerMsRef.current;
@@ -595,15 +867,19 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
       const maxOff = Math.max(0, total - desiredVisibleMs);
       setScrollMs(Math.max(0, Math.min(maxOff, dragStartOff.current + dtMs)));
     },
-    [frozen, data, totalMs],
+    [frozen, data, totalMs, markers, activePhase, onMarkerUpdate, findNearEdge],
   );
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
+      if (draggingEdge.current) {
+        draggingEdge.current = null;
+        return;
+      }
+
       const wasDragging = isDragging.current;
       isDragging.current = false;
 
-      // Si no hubo drag real y hay herramienta activa → click para marcar
       if (wasDragging && !didDragRef.current && activePhase && onCanvasClick && frozen) {
         const container = containerRef.current;
         if (!container) return;
@@ -618,13 +894,18 @@ export function EMGCanvas({ data, frozen, markers = [], activePhase, pendingStar
 
   const handleMouseLeave = useCallback(() => {
     isDragging.current = false;
+    draggingEdge.current = null;
   }, []);
+
+  const cursor = frozen
+    ? cursorStyle
+    : "default";
 
   return (
     <div
       ref={containerRef}
       className={className}
-      style={{ width: "100%", height: "100%", minHeight: 200, cursor: activePhase && frozen ? "crosshair" : frozen ? "grab" : "default" }}
+      style={{ width: "100%", height: "100%", minHeight: 200, cursor }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
