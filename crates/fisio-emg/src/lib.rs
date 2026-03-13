@@ -1,10 +1,12 @@
 //! FisioAccess EMG
-//! 
+//!
 //! Módulo de procesamiento de señales de electromiograma (EMG) con calibración.
 
 pub mod handler;
 pub mod calibration;
 pub mod converter;
+pub mod processor;
 
 pub use handler::EmgHandler;
-pub use calibration::CalibrationState;
+pub use calibration::CalibrationEngine;
+pub use processor::{EmgProcessor, EmgConfig};

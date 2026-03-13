@@ -20,7 +20,7 @@ export interface DataPoint {
 /** Intervalo de flush al state (ms). 20Hz es suficiente para UI fluida. */
 const FLUSH_INTERVAL = 50;
 
-export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
+export function useSerial(defaultBaudRate = 115200, bufferSize = 500, mode?: string) {
   const [ports, setPorts] = useState<string[]>([]);
   const [selectedPort, setSelectedPort] = useState("");
   const [isConnected, setIsConnected] = useState(false);
@@ -120,6 +120,7 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500) {
       const result = await invoke<ConnectionStatus>("serial_connect", {
         port: selectedPort,
         baudRate: defaultBaudRate,
+        mode: mode ?? null,
       });
       setIsConnected(result.connected);
     } catch (e) {

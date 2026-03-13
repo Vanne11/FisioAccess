@@ -23,4 +23,6 @@ log = "0.4"
 env_logger = "0.10"
 fisio-core = { path = "../crates/fisio-core" }
 fisio-serial = { path = "../crates/fisio-serial" }
+fisio-filters = { path = "../crates/fisio-filters" }
+fisio-emg = { path = "../crates/fisio-emg" }
 serialport = "4.2"

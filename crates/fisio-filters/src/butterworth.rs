@@ -1,28 +1,49 @@
-//! Filtro Butterworth
+//! Filtro Butterworth IIR de segundo orden (biquad)
 
+use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Type, Q_BUTTERWORTH_F64};
 use crate::traits::FilterTrait;
 
-/// Filtro Butterworth de segundo orden
+/// Filtro Butterworth de segundo orden usando biquad
 pub struct ButterworthFilter {
     enabled: bool,
-    coefficients: Vec<f64>,
-    state: Vec<f64>,
+    filter: DirectForm2Transposed<f64>,
 }
 
 impl ButterworthFilter {
-    /// Crear filtro low-pass
-    pub fn lowpass(order: usize, cutoff: f64, fs: f64) -> Self {
-        // TODO: Implementar cálculo de coeficientes
+    /// Crear filtro low-pass Butterworth
+    /// - `cutoff`: frecuencia de corte en Hz
+    /// - `fs`: frecuencia de muestreo en Hz
+    pub fn lowpass(cutoff: f64, fs: f64) -> Self {
+        let coeffs = Coefficients::<f64>::from_params(
+            Type::LowPass,
+            fs.hz(),
+            cutoff.hz(),
+            Q_BUTTERWORTH_F64,
+        )
+        .expect("Parámetros inválidos para filtro lowpass");
+
         Self {
             enabled: true,
-            coefficients: vec![1.0; order],
-            state: vec![0.0; order],
+            filter: DirectForm2Transposed::<f64>::new(coeffs),
         }
     }
 
-    /// Crear filtro high-pass
-    pub fn highpass(order: usize, cutoff: f64, fs: f64) -> Self {
-        Self::lowpass(order, cutoff, fs)
+    /// Crear filtro high-pass Butterworth
+    /// - `cutoff`: frecuencia de corte en Hz
+    /// - `fs`: frecuencia de muestreo en Hz
+    pub fn highpass(cutoff: f64, fs: f64) -> Self {
+        let coeffs = Coefficients::<f64>::from_params(
+            Type::HighPass,
+            fs.hz(),
+            cutoff.hz(),
+            Q_BUTTERWORTH_F64,
+        )
+        .expect("Parámetros inválidos para filtro highpass");
+
+        Self {
+            enabled: true,
+            filter: DirectForm2Transposed::<f64>::new(coeffs),
+        }
     }
 }
 
@@ -31,12 +52,11 @@ impl FilterTrait for ButterworthFilter {
         if !self.enabled {
             return value;
         }
-        // TODO: Implementar filtrado real
-        value
+        self.filter.run(value)
     }
 
     fn reset(&mut self) {
-        self.state.fill(0.0);
+        self.filter.reset_state();
     }
 
     fn set_enabled(&mut self, enabled: bool) {

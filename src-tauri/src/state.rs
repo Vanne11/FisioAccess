@@ -6,10 +6,20 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use fisio_emg::{EmgProcessor, EmgConfig};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SerialDataPoint {
     pub timestamp_ms: f64,
     pub value: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CalibrationStatus {
+    pub calibrating: bool,
+    pub calibrated: bool,
+    pub progress: f64,
+    pub offset_mv: f64,
 }
 
 struct SerialInner {
@@ -31,7 +41,13 @@ impl SerialManager {
         }
     }
 
-    pub fn connect(&self, port_name: &str, baud_rate: u32, app: AppHandle) -> Result<(), String> {
+    pub fn connect(
+        &self,
+        port_name: &str,
+        baud_rate: u32,
+        app: AppHandle,
+        emg_processor: Option<Arc<Mutex<EmgProcessor>>>,
+    ) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| format!("Lock: {e}"))?;
 
         if inner.connected {
@@ -59,7 +75,7 @@ impl SerialManager {
                     Ok(0) => break,
                     Ok(_) => {
                         let trimmed = line.trim();
-                        // Try parsing as f64 directly, or last CSV field (signal value)
+
                         // Capturar lineas "BPM: xx" del firmware
                         if let Some(bpm_str) = trimmed.strip_prefix("BPM:") {
                             if let Ok(bpm) = bpm_str.trim().parse::<f64>() {
@@ -68,7 +84,7 @@ impl SerialManager {
                             continue;
                         }
 
-                        let value = trimmed
+                        let raw_value = trimmed
                             .parse::<f64>()
                             .or_else(|_| {
                                 trimmed
@@ -80,7 +96,36 @@ impl SerialManager {
                             })
                             .ok();
 
-                        if let Some(value) = value {
+                        if let Some(raw) = raw_value {
+                            let value = if let Some(ref proc) = emg_processor {
+                                if let Ok(mut p) = proc.lock() {
+                                    // Emitir progreso de calibración si está calibrando
+                                    if p.is_calibrating() {
+                                        let progress = p.calibration_progress();
+                                        let _ = app.emit("emg-calibration-progress", progress);
+                                    }
+
+                                    let result = p.process(raw);
+
+                                    // Notificar si la calibración acaba de terminar
+                                    if p.is_calibrated() && !p.is_calibrating() {
+                                        let status = CalibrationStatus {
+                                            calibrating: false,
+                                            calibrated: true,
+                                            progress: 1.0,
+                                            offset_mv: p.offset_mv(),
+                                        };
+                                        let _ = app.emit("emg-calibration-done", &status);
+                                    }
+
+                                    result
+                                } else {
+                                    raw
+                                }
+                            } else {
+                                raw
+                            };
+
                             let point = SerialDataPoint {
                                 timestamp_ms: start.elapsed().as_millis() as f64,
                                 value,
@@ -119,12 +164,14 @@ impl SerialManager {
 
 pub struct AppState {
     pub serial: SerialManager,
+    pub emg_processor: Arc<Mutex<EmgProcessor>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             serial: SerialManager::new(),
+            emg_processor: Arc::new(Mutex::new(EmgProcessor::new(EmgConfig::default()))),
         }
     }
 }
