@@ -192,7 +192,7 @@ function renderFullSignalImage(
       ctx.font = "bold 9px monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillText(cfg.label, labelX, 3);
+      ctx.fillText(m.customLabel || cfg.label, labelX, 3);
     }
   }
 
@@ -376,6 +376,16 @@ export function EMGMonitor() {
     setPendingStart(null);
   }, []);
 
+  const handleDeleteMarker = useCallback((id: string) => {
+    setPhaseMarkers(prev => prev.filter(m => m.id !== id));
+  }, []);
+
+  const handleRenameMarker = useCallback((id: string, label: string) => {
+    setPhaseMarkers(prev => prev.map(m =>
+      m.id === id ? { ...m, customLabel: label || undefined } : m
+    ));
+  }, []);
+
   // Protocol handlers
   // ── Marcado automático de fases ──
   // ProtocolRunner emite eventos phase-start / phase-end / protocol-end.
@@ -553,7 +563,7 @@ export function EMGMonitor() {
           count++;
         }
         return {
-          label: cfg.label,
+          label: m.customLabel || cfg.label,
           color: cfg.color,
           durationSec: (end - m.startMs) / 1000,
           rms: count > 0 ? Math.sqrt(sumSq / count) : 0,
@@ -983,13 +993,28 @@ export function EMGMonitor() {
                     <div className="h-px bg-surface-600 my-1" />
                     {markerStats.map((s) => {
                       const cfg = EMG_PHASE_CONFIG[s.type];
+                      const marker = phaseMarkers.find(m => m.id === s.id);
                       return (
-                        <div key={s.id} className="rounded px-1.5 py-1 text-[10px]" style={{ borderLeft: `3px solid ${cfg.color}` }}>
-                          <div className="flex justify-between">
-                            <span style={{ color: cfg.color }} className="font-medium">{cfg.label}</span>
-                            <span className="text-secondary">
+                        <div key={s.id} className="group rounded px-1.5 py-1 text-[10px]" style={{ borderLeft: `3px solid ${cfg.color}` }}>
+                          <div className="flex items-center justify-between gap-1">
+                            <input
+                              type="text"
+                              value={marker?.customLabel ?? cfg.label}
+                              onChange={e => handleRenameMarker(s.id, e.target.value)}
+                              className="font-medium bg-transparent border-none outline-none w-full min-w-0 px-0 py-0 text-[10px]"
+                              style={{ color: cfg.color }}
+                              title="Editar nombre"
+                            />
+                            <span className="text-secondary shrink-0">
                               {s.open ? "REC" : s.dur >= 1000 ? `${(s.dur / 1000).toFixed(1)}s` : `${s.dur.toFixed(0)}ms`}
                             </span>
+                            <button
+                              onClick={() => handleDeleteMarker(s.id)}
+                              className="shrink-0 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-opacity px-0.5"
+                              title="Eliminar marcador"
+                            >
+                              ×
+                            </button>
                           </div>
                           {s.count > 0 && (
                             <div className="flex gap-2 text-secondary mt-0.5">

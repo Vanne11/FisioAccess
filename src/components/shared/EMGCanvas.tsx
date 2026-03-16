@@ -12,6 +12,7 @@ export interface EMGPhaseMarker {
   type: EMGPhaseType;
   startMs: number;
   endMs: number | null; // null = en curso
+  customLabel?: string; // nombre editable por el usuario
 }
 
 export interface EMGPhaseStats {
@@ -723,7 +724,7 @@ export function EMGCanvas({
         ctx.font = "bold 9px monospace";
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(cfg.label, labelX, 3);
+        ctx.fillText(m.customLabel || cfg.label, labelX, 3);
 
         // Stats line 1: duration + RMS
         const durMs = mEnd - mStart;
