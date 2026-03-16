@@ -49,12 +49,39 @@ const CAL_REPOSO_MS = 5000;
 const CAL_LEVE_MS = 5000;
 const CAL_MVC_MS = 3000;
 
+/** Read current theme colors from CSS variables */
+function getReportThemeColors() {
+  const s = getComputedStyle(document.documentElement);
+  const get = (v: string, fb: string) => s.getPropertyValue(v).trim() || fb;
+  const bg = get("--color-surface-950", "#020617");
+  const label = get("--color-text-secondary", "#64748b");
+
+  // Determine if theme is light-ish to adjust semi-transparent overlays
+  // Parse bg to check brightness
+  let isLight = false;
+  const m = bg.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (m) {
+    const lum = (parseInt(m[1], 16) * 299 + parseInt(m[2], 16) * 587 + parseInt(m[3], 16) * 114) / 1000;
+    isLight = lum > 140;
+  }
+
+  return {
+    bg,
+    label,
+    gridSmall: isLight ? "rgba(245, 158, 11, 0.12)" : "rgba(245, 158, 11, 0.15)",
+    zeroLine: isLight ? "rgba(0, 0, 0, 0.15)" : "rgba(255, 255, 255, 0.15)",
+    trace: "rgba(245, 158, 11, 1)",
+  };
+}
+
 /** Render the full EMG signal to an offscreen canvas and return a data URL */
 function renderFullSignalImage(
   data: EMGDataPoint[],
   markers: EMGPhaseMarker[],
 ): string {
   if (data.length < 2) return "";
+
+  const theme = getReportThemeColors();
 
   const W = 1200;
   const H = 300;
@@ -69,8 +96,8 @@ function renderFullSignalImage(
   const ctx = canvas.getContext("2d");
   if (!ctx) return "";
 
-  // Background
-  ctx.fillStyle = "#020617";
+  // Background — from current theme
+  ctx.fillStyle = theme.bg;
   ctx.fillRect(0, 0, W, H);
 
   const startTs = data[0].timestamp_ms;
@@ -102,7 +129,7 @@ function renderFullSignalImage(
   const norm = rawStep / mag;
   const yStep = (norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
 
-  ctx.strokeStyle = "rgba(245, 158, 11, 0.15)";
+  ctx.strokeStyle = theme.gridSmall;
   ctx.lineWidth = 0.5;
   ctx.beginPath();
   for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax; v += yStep) {
@@ -112,7 +139,7 @@ function renderFullSignalImage(
   ctx.stroke();
 
   // Y labels
-  ctx.fillStyle = "#64748b";
+  ctx.fillStyle = theme.label;
   ctx.font = "10px monospace";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
@@ -124,7 +151,7 @@ function renderFullSignalImage(
 
   // Zero line
   if (yMin <= 0 && yMax >= 0) {
-    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.strokeStyle = theme.zeroLine;
     ctx.lineWidth = 1;
     ctx.setLineDash([5, 3]);
     ctx.beginPath();
@@ -180,7 +207,7 @@ function renderFullSignalImage(
   let step = 1;
   if (data.length > maxPts) step = Math.ceil(data.length / maxPts);
 
-  ctx.strokeStyle = "rgba(245, 158, 11, 1)";
+  ctx.strokeStyle = theme.trace;
   ctx.lineWidth = 1;
   ctx.lineJoin = "round";
   ctx.beginPath();
@@ -199,7 +226,7 @@ function renderFullSignalImage(
   const totalSec = totalMs / 1000;
   const xStep = totalSec <= 5 ? 1 : totalSec <= 20 ? 2 : totalSec <= 60 ? 5 : 10;
   const xStepMs = xStep * 1000;
-  ctx.fillStyle = "#64748b";
+  ctx.fillStyle = theme.label;
   ctx.font = "9px monospace";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
@@ -211,7 +238,7 @@ function renderFullSignalImage(
   }
 
   // Unit label
-  ctx.fillStyle = "#64748b";
+  ctx.fillStyle = theme.label;
   ctx.font = "9px monospace";
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
