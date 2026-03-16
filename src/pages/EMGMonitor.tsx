@@ -377,6 +377,13 @@ export function EMGMonitor() {
   }, []);
 
   // Protocol handlers
+  // ── Marcado automático de fases ──
+  // ProtocolRunner emite eventos phase-start / phase-end / protocol-end.
+  // En phase-start guardamos el timestamp actual de los datos del sensor
+  // (protocolPhaseStartRef). En phase-end leemos ese inicio y creamos un
+  // EMGPhaseMarker con [startMs, endMs] alineado a la señal real.
+  // Al final (protocol-end) congelamos el gráfico y mostramos comparación.
+  // Ver ProtocolRunner.tsx para el flujo completo.
   const handleProtocolStart = useCallback(() => {
     setProtocolRunning(true);
     setFrozen(false);
@@ -400,6 +407,9 @@ export function EMGMonitor() {
       setProtocolRunning(false);
       setFrozen(true);
       setShowComparison(true);
+      if (event.autoStop) {
+        serial.stopRecording();
+      }
     }
   }, [serial.data]);
 

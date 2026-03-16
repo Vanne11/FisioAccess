@@ -1,3 +1,27 @@
+/**
+ * ProtocolRunner — Modo de protocolo guiado para EMG.
+ *
+ * Flujo de marcado automático de fases:
+ * ──────────────────────────────────────
+ * 1. El usuario pulsa "Iniciar protocolo".
+ * 2. Se muestra una cuenta regresiva de 3 s (estado "countdown").
+ * 3. Se recorre la secuencia de fases (reposo → leve → máxima → relajación).
+ *    Por cada fase un setInterval de 1 s controla el tiempo y emite:
+ *      • phase-start  → al comenzar la fase (el padre guarda el timestamp).
+ *      • phase-end    → al cumplirse la duración (el padre crea el marcador).
+ * 4. Al terminar todas las fases se emite protocol-end; el padre congela
+ *    el gráfico y abre la comparación.
+ *
+ * Los timestamps usados son los del último dato recibido del sensor
+ * (serial.data[last].timestamp_ms), NO Date.now(), para que los marcadores
+ * coincidan exactamente con la señal grabada.
+ *
+ * Para modificar el protocolo:
+ *  - Cambiar DEFAULT_PROTOCOL para ajustar fases, duraciones o instrucciones.
+ *  - Las duraciones también son editables en runtime desde el panel de config.
+ *  - Para agregar nuevas fases, añadir el tipo en EMGPhaseType (EMGCanvas.tsx)
+ *    y su config en EMG_PHASE_CONFIG, luego agregarlo a DEFAULT_PROTOCOL.
+ */
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Play, Square, SkipForward, Settings2 } from "lucide-react";
 import { EMG_PHASE_CONFIG, type EMGPhaseType } from "./EMGCanvas";
@@ -22,6 +46,8 @@ export interface ProtocolEvent {
   phase: EMGPhaseType;
   stepIndex: number;
   timestampMs: number;
+  /** True when the user wants recording to stop after protocol ends */
+  autoStop?: boolean;
 }
 
 interface ProtocolRunnerProps {
@@ -51,6 +77,7 @@ export function ProtocolRunner({
   const [elapsed, setElapsed] = useState(0); // seconds elapsed in current step/countdown
   const [countdownLeft, setCountdownLeft] = useState(0);
   const [showConfig, setShowConfig] = useState(false);
+  const [autoStop, setAutoStop] = useState(true);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTsRef = useRef(0);
@@ -63,6 +90,8 @@ export function ProtocolRunner({
   onPhaseEventRef.current = onPhaseEvent;
   const protocolRef = useRef(protocol);
   protocolRef.current = protocol;
+  const autoStopRef = useRef(autoStop);
+  autoStopRef.current = autoStop;
   const beginStepRef = useRef<(idx: number) => void>(() => {});
 
   const clearTimer = useCallback(() => {
@@ -91,7 +120,7 @@ export function ProtocolRunner({
     const proto = protocolRef.current;
     if (idx >= proto.length) {
       setState("finished");
-      onPhaseEventRef.current({ type: "protocol-end", phase: proto[proto.length - 1].phase, stepIndex: idx - 1, timestampMs: currentTsRef.current });
+      onPhaseEventRef.current({ type: "protocol-end", phase: proto[proto.length - 1].phase, stepIndex: idx - 1, timestampMs: currentTsRef.current, autoStop: autoStopRef.current });
       clearTimer();
       return;
     }
@@ -211,6 +240,16 @@ export function ProtocolRunner({
               </div>
             );
           })}
+          <div className="h-px bg-surface-600 my-1" />
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoStop}
+              onChange={e => setAutoStop(e.target.checked)}
+              className="w-3 h-3 rounded border-surface-600 accent-green-500"
+            />
+            <span className="text-[10px] text-secondary">Detener grabación al finalizar</span>
+          </label>
           <div className="text-[9px] text-secondary mt-1 text-center">
             Total: {protocol.reduce((s, p) => s + p.durationSec, 0)}s + {COUNTDOWN_SEC}s cuenta regresiva
           </div>
