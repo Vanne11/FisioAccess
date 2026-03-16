@@ -154,7 +154,7 @@ function PatientForm({
     <div className="grid grid-cols-3 gap-3">
       {field("Nombre del paciente", "name", "Nombre completo")}
       {field("Edad", "age", "Ej: 45")}
-      {field("Identificacion", "id", "DNI / Cedula")}
+      {field("Identificación", "id", "DNI / Cédula")}
     </div>
   );
 }
@@ -246,20 +246,20 @@ function ReportPage({
             </div>
             <div>
               <span style={{ fontSize: "12px", color: "#9ca3af" }}>Edad</span>
-              <p style={{ fontWeight: 500, margin: "2px 0 0" }}>{patient.age ? `${patient.age} anos` : "\u2014"}</p>
+              <p style={{ fontWeight: 500, margin: "2px 0 0" }}>{patient.age ? `${patient.age} años` : "\u2014"}</p>
             </div>
             <div>
-              <span style={{ fontSize: "12px", color: "#9ca3af" }}>Identificacion</span>
+              <span style={{ fontSize: "12px", color: "#9ca3af" }}>Identificación</span>
               <p style={{ fontWeight: 500, margin: "2px 0 0" }}>{patient.id || "\u2014"}</p>
             </div>
           </div>
         </div>
 
-        {/* ---- Grafico de la senal ---- */}
+        {/* ---- Gráfico de la señal ---- */}
         {report.signalImage && (
           <div style={{ marginBottom: "24px" }}>
             <h2 style={{ fontSize: "11px", fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "12px" }}>
-              {report.signalLabel || "Registro de senal"}
+              {report.signalLabel || "Registro de señal"}
             </h2>
             <div
               style={{
@@ -271,7 +271,7 @@ function ReportPage({
             >
               <img
                 src={report.signalImage}
-                alt={report.signalLabel || "Senal"}
+                alt={report.signalLabel || "Señal"}
                 style={{ width: "100%", height: "auto", borderRadius: "4px", display: "block" }}
               />
             </div>
@@ -287,7 +287,7 @@ function ReportPage({
             <thead>
               <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
                 <th style={{ textAlign: "left", padding: "8px 0", fontSize: "12px", fontWeight: 600, color: "#6b7280", width: "50%" }}>
-                  Parametro
+                  Parámetro
                 </th>
                 <th style={{ textAlign: "left", padding: "8px 0", fontSize: "12px", fontWeight: 600, color: "#6b7280" }}>
                   Valor
@@ -319,7 +319,7 @@ function ReportPage({
               <thead>
                 <tr style={{ borderBottom: "2px solid #e5e7eb" }}>
                   <th style={{ textAlign: "left", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Fase</th>
-                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Duracion</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Duración</th>
                   <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>RMS (uV)</th>
                   <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>P-P (uV)</th>
                   <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Pico+ (uV)</th>
