@@ -31,7 +31,8 @@ import { ProtocolRunner, type ProtocolEvent } from "@/components/shared/Protocol
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useSerial } from "@/hooks/useSerial";
-import { ReportPreview, type ReportData, captureCanvas } from "@/components/shared/ReportPreview";
+import { ReportPreview, type ReportData, type PhaseReportEntry, captureCanvas } from "@/components/shared/ReportPreview";
+import type { EMGDataPoint } from "@/components/shared/EMGCanvas";
 
 interface CalibrationStatus {
   calibrating: boolean;
@@ -47,6 +48,177 @@ const EMG_BUFFER_SIZE = 5000;
 const CAL_REPOSO_MS = 5000;
 const CAL_LEVE_MS = 5000;
 const CAL_MVC_MS = 3000;
+
+/** Render the full EMG signal to an offscreen canvas and return a data URL */
+function renderFullSignalImage(
+  data: EMGDataPoint[],
+  markers: EMGPhaseMarker[],
+): string {
+  if (data.length < 2) return "";
+
+  const W = 1200;
+  const H = 300;
+  const ML = 52; // margin left
+  const MB = 24; // margin bottom
+  const plotW = W - ML;
+  const plotH = H - MB;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+
+  // Background
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, W, H);
+
+  const startTs = data[0].timestamp_ms;
+  const endTs = data[data.length - 1].timestamp_ms;
+  const totalMs = endTs - startTs;
+  if (totalMs <= 0) return "";
+
+  const pxPerMs = plotW / totalMs;
+  const tsToX = (ts: number) => ML + (ts - startTs) * pxPerMs;
+
+  // Find global min/max for Y scale
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (const pt of data) {
+    if (pt.value < yMin) yMin = pt.value;
+    if (pt.value > yMax) yMax = pt.value;
+  }
+  if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) { yMin = -10; yMax = 10; }
+  const pad = (yMax - yMin) * 0.1;
+  yMin -= pad;
+  yMax += pad;
+
+  const valueToY = (v: number) => (1 - (v - yMin) / (yMax - yMin)) * plotH;
+
+  // Grid Y
+  const yRange = yMax - yMin;
+  const rawStep = yRange / 6;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const norm = rawStep / mag;
+  const yStep = (norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+
+  ctx.strokeStyle = "rgba(245, 158, 11, 0.15)";
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax; v += yStep) {
+    const y = valueToY(v);
+    ctx.moveTo(ML, y); ctx.lineTo(W, y);
+  }
+  ctx.stroke();
+
+  // Y labels
+  ctx.fillStyle = "#64748b";
+  ctx.font = "10px monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax; v += yStep) {
+    const y = valueToY(v);
+    if (y < 8 || y > plotH - 8) continue;
+    ctx.fillText(v.toFixed(yStep >= 1 ? 0 : 1), ML - 4, y);
+  }
+
+  // Zero line
+  if (yMin <= 0 && yMax >= 0) {
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    const y0 = valueToY(0);
+    ctx.moveTo(ML, y0); ctx.lineTo(W, y0);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Phase marker bands
+  for (const m of markers) {
+    if (m.endMs == null) continue;
+    const cfg = EMG_PHASE_CONFIG[m.type];
+    const x1 = Math.max(ML, tsToX(m.startMs));
+    const x2 = Math.min(W, tsToX(m.endMs));
+    if (x2 <= x1) continue;
+
+    // Band background
+    ctx.fillStyle = cfg.bg;
+    ctx.fillRect(x1, 0, x2 - x1, plotH);
+
+    // Border lines
+    ctx.strokeStyle = cfg.color;
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x1, 0); ctx.lineTo(x1, plotH);
+    ctx.moveTo(x2, 0); ctx.lineTo(x2, plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    // Phase label at top
+    const labelX = (x1 + x2) / 2;
+    if (x2 - x1 > 25) {
+      ctx.fillStyle = cfg.color;
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(cfg.label, labelX, 3);
+    }
+  }
+
+  // EMG trace
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(ML, 0, plotW, plotH);
+  ctx.clip();
+
+  // Downsample if too many points for the canvas width
+  const maxPts = plotW * 2;
+  let step = 1;
+  if (data.length > maxPts) step = Math.ceil(data.length / maxPts);
+
+  ctx.strokeStyle = "rgba(245, 158, 11, 1)";
+  ctx.lineWidth = 1;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < data.length; i += step) {
+    const pt = data[i];
+    const x = tsToX(pt.timestamp_ms);
+    const y = valueToY(pt.value);
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // X axis labels
+  const totalSec = totalMs / 1000;
+  const xStep = totalSec <= 5 ? 1 : totalSec <= 20 ? 2 : totalSec <= 60 ? 5 : 10;
+  const xStepMs = xStep * 1000;
+  ctx.fillStyle = "#64748b";
+  ctx.font = "9px monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (let t = Math.ceil(startTs / xStepMs) * xStepMs; t <= endTs; t += xStepMs) {
+    const x = tsToX(t);
+    if (x < ML + 10 || x > W - 10) continue;
+    const sec = (t - startTs) / 1000;
+    ctx.fillText(sec >= 60 ? `${(sec / 60).toFixed(1)}m` : `${sec.toFixed(0)}s`, x, plotH + 4);
+  }
+
+  // Unit label
+  ctx.fillStyle = "#64748b";
+  ctx.font = "9px monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText("\u00B5V", 2, 4);
+
+  return canvas.toDataURL("image/png");
+}
 
 export function EMGMonitor() {
   const serial = useSerial(EMG_BAUD_RATE, EMG_BUFFER_SIZE, "emg");
@@ -308,25 +480,70 @@ export function EMGMonitor() {
   const [signalImage, setSignalImage] = useState("");
 
   const handleOpenReport = useCallback(() => {
-    setSignalImage(captureCanvas(emgCanvasRef.current));
+    // Render full signal (all data, not just visible window)
+    const fullImg = renderFullSignalImage(serial.data, phaseMarkers);
+    setSignalImage(fullImg || captureCanvas(emgCanvasRef.current));
     setReportOpen(true);
-  }, []);
+  }, [serial.data, phaseMarkers]);
+
+  // Global metrics (all data, not just recent)
+  const globalMetrics = useMemo(() => {
+    if (serial.data.length === 0) return { rms: 0, peak: 0 };
+    let sumSq = 0;
+    let maxAbs = 0;
+    for (const pt of serial.data) {
+      sumSq += pt.value * pt.value;
+      const a = Math.abs(pt.value);
+      if (a > maxAbs) maxAbs = a;
+    }
+    return { rms: Math.sqrt(sumSq / serial.data.length), peak: maxAbs };
+  }, [serial.data]);
+
+  // Phase entries for report
+  const phaseReportEntries: PhaseReportEntry[] = useMemo(() => {
+    return phaseMarkers
+      .filter(m => m.endMs != null)
+      .map(m => {
+        const cfg = EMG_PHASE_CONFIG[m.type];
+        const end = m.endMs!;
+        let sumSq = 0, count = 0, mn = Infinity, mx = -Infinity;
+        for (const pt of serial.data) {
+          if (pt.timestamp_ms < m.startMs) continue;
+          if (pt.timestamp_ms > end) break;
+          if (pt.value < mn) mn = pt.value;
+          if (pt.value > mx) mx = pt.value;
+          sumSq += pt.value * pt.value;
+          count++;
+        }
+        return {
+          label: cfg.label,
+          color: cfg.color,
+          durationSec: (end - m.startMs) / 1000,
+          rms: count > 0 ? Math.sqrt(sumSq / count) : 0,
+          peakToPeak: isFinite(mx) && isFinite(mn) ? mx - mn : 0,
+          peakPositive: isFinite(mx) ? mx : 0,
+          peakNegative: isFinite(mn) ? mn : 0,
+        };
+      });
+  }, [phaseMarkers, serial.data]);
 
   const emgReport: ReportData = useMemo(() => ({
     title: "Electromiograma",
     accent: "#f59e0b",
     fields: [
-      { label: "RMS", value: rms > 0 ? rms.toFixed(1) : "\u2014", unit: "\u00B5V" },
-      { label: "Amplitud pico", value: peak > 0 ? peak.toFixed(1) : "\u2014", unit: "\u00B5V" },
-      { label: "Duración", value: totalSeconds > 0 ? `${totalMin}:${totalSec.toString().padStart(2, "0")}` : "\u2014", unit: "min:seg" },
+      { label: "RMS global", value: globalMetrics.rms > 0 ? globalMetrics.rms.toFixed(1) : "\u2014", unit: "\u00B5V" },
+      { label: "Amplitud pico global", value: globalMetrics.peak > 0 ? globalMetrics.peak.toFixed(1) : "\u2014", unit: "\u00B5V" },
+      { label: "Duración total", value: totalSeconds > 0 ? `${totalMin}:${totalSec.toString().padStart(2, "0")}` : "\u2014", unit: "min:seg" },
       { label: "Muestras", value: serial.data.length.toString() },
+      { label: "Fases registradas", value: phaseMarkers.filter(m => m.endMs != null).length.toString() },
       { label: "Offset", value: offsetMv.toFixed(1), unit: "mV" },
       { label: "Ganancia", value: adcConfig.gain.toString() },
       { label: "Calibración", value: isCalibrated ? "Calibrado" : "Por defecto (666 mV)" },
     ],
     signalImage,
-    signalLabel: "Potencial muscular EMG (\u00B5V)",
-  }), [rms, peak, serial.data.length, isCalibrated, offsetMv, signalImage, totalSeconds, totalMin, totalSec, adcConfig.gain]);
+    signalLabel: "Registro EMG completo (\u00B5V) — Señal con fases marcadas",
+    phases: phaseReportEntries.length > 0 ? phaseReportEntries : undefined,
+  }), [globalMetrics, serial.data.length, isCalibrated, offsetMv, signalImage, totalSeconds, totalMin, totalSec, adcConfig.gain, phaseMarkers, phaseReportEntries]);
 
   // Marker stats for sidebar
   const markerStats = useMemo(() => {

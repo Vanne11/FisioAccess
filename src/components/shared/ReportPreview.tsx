@@ -23,6 +23,16 @@ export interface ReportField {
   unit?: string;
 }
 
+export interface PhaseReportEntry {
+  label: string;
+  color: string;
+  durationSec: number;
+  rms: number;
+  peakToPeak: number;
+  peakPositive: number;
+  peakNegative: number;
+}
+
 export interface ReportData {
   title: string;
   accent: string;
@@ -30,6 +40,8 @@ export interface ReportData {
   signalImage?: string;
   signalLabel?: string;
   observations?: string;
+  /** Phase stats for EMG protocol reports */
+  phases?: PhaseReportEntry[];
 }
 
 interface ReportPreviewProps {
@@ -296,6 +308,54 @@ function ReportPage({
             </tbody>
           </table>
         </div>
+
+        {/* ---- Fases del protocolo ---- */}
+        {report.phases && report.phases.length > 0 && (
+          <div style={{ marginBottom: "24px" }}>
+            <h2 style={{ fontSize: "11px", fontWeight: 600, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "12px" }}>
+              Analisis por fases
+            </h2>
+            <table style={{ width: "100%", fontSize: "13px", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid #e5e7eb" }}>
+                  <th style={{ textAlign: "left", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Fase</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Duracion</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>RMS (uV)</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>P-P (uV)</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Pico+ (uV)</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Pico- (uV)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.phases.map((ph, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                    <td style={{ padding: "8px 6px" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                        <span style={{ width: "10px", height: "10px", borderRadius: "50%", backgroundColor: ph.color, display: "inline-block", flexShrink: 0 }} />
+                        <span style={{ fontWeight: 500, color: "#374151" }}>{ph.label}</span>
+                      </span>
+                    </td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "monospace", color: "#374151" }}>
+                      {ph.durationSec >= 1 ? `${ph.durationSec.toFixed(1)}s` : `${(ph.durationSec * 1000).toFixed(0)}ms`}
+                    </td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "monospace", fontWeight: 500, color: "#374151" }}>
+                      {ph.rms.toFixed(1)}
+                    </td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "monospace", fontWeight: 500, color: "#374151" }}>
+                      {ph.peakToPeak.toFixed(1)}
+                    </td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "monospace", color: "#6b7280" }}>
+                      {ph.peakPositive.toFixed(1)}
+                    </td>
+                    <td style={{ padding: "8px 6px", textAlign: "right", fontFamily: "monospace", color: "#6b7280" }}>
+                      {ph.peakNegative.toFixed(1)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {/* ---- Observaciones ---- */}
         <div style={{ marginBottom: "32px" }}>
