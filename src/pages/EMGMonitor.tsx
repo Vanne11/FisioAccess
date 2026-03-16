@@ -9,6 +9,7 @@ import {
   Snowflake,
   FileText,
   Activity,
+  ListChecks,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -26,6 +27,7 @@ import {
 } from "@/components/shared/EMGCanvas";
 import { VUMeter, DEFAULT_THRESHOLDS, type VUThresholds, type CalibrationStep } from "@/components/shared/VUMeter";
 import { PhaseComparison } from "@/components/shared/PhaseComparison";
+import { ProtocolRunner, type ProtocolEvent } from "@/components/shared/ProtocolRunner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useSerial } from "@/hooks/useSerial";
@@ -63,6 +65,13 @@ export function EMGMonitor() {
   const [showCalBar, setShowCalBar] = useState(true);
   const [adcConfig, setAdcConfig] = useState<ADCConfig>(DEFAULT_ADC_CONFIG);
   const [showComparison, setShowComparison] = useState(true);
+
+  // Auto-scale display
+  const [autoScaleValue, setAutoScaleValue] = useState<number>(100);
+
+  // Protocol mode state
+  const [protocolRunning, setProtocolRunning] = useState(false);
+  const protocolPhaseStartRef = useRef<Map<number, number>>(new Map());
 
   // VU Meter state
   const [vuThresholds, setVuThresholds] = useState<VUThresholds>(DEFAULT_THRESHOLDS);
@@ -167,6 +176,33 @@ export function EMGMonitor() {
     setActivePhase(null);
     setPendingStart(null);
   }, []);
+
+  // Protocol handlers
+  const handleProtocolStart = useCallback(() => {
+    setProtocolRunning(true);
+    setFrozen(false);
+    if (!serial.recording) serial.startRecording();
+    protocolPhaseStartRef.current.clear();
+  }, [serial]);
+
+  const handleProtocolStop = useCallback(() => {
+    setProtocolRunning(false);
+  }, []);
+
+  const handleProtocolEvent = useCallback((event: ProtocolEvent) => {
+    const ts = serial.data.length > 0 ? serial.data[serial.data.length - 1].timestamp_ms : Date.now();
+    if (event.type === "phase-start") {
+      protocolPhaseStartRef.current.set(event.stepIndex, ts);
+    } else if (event.type === "phase-end") {
+      const startTs = protocolPhaseStartRef.current.get(event.stepIndex) ?? ts;
+      const id = `proto-${nextMarkerId.current++}`;
+      setPhaseMarkers(prev => [...prev, { id, type: event.phase, startMs: startTs, endMs: ts }]);
+    } else if (event.type === "protocol-end") {
+      setProtocolRunning(false);
+      setFrozen(true);
+      setShowComparison(true);
+    }
+  }, [serial.data]);
 
   // ADC calibration
   const startCalibration = async () => {
@@ -378,7 +414,7 @@ export function EMGMonitor() {
               onClick={() => setScalePreset(null)}
               className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${scalePreset === null ? "bg-emg-500/30 text-emg-400 ring-1 ring-emg-500/40" : "bg-surface-700 text-secondary hover:text-primary"}`}
             >
-              Auto
+              Auto{scalePreset === null ? ` \u00B1${autoScaleValue}` : ""}
             </button>
             {SCALE_PRESETS.map(s => (
               <button
@@ -445,6 +481,7 @@ export function EMGMonitor() {
                   scalePreset={scalePreset}
                   showRmsEnvelope={showRmsEnvelope}
                   showCalBar={showCalBar}
+                  onAutoScaleChange={setAutoScaleValue}
                   className="h-full"
                 />
               </div>
@@ -506,6 +543,26 @@ export function EMGMonitor() {
                 <span>Grabación</span>
                 <span className="font-mono text-emg-400">{totalMin}:{totalSec.toString().padStart(2, "0")}</span>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Protocol Mode */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-1.5">
+                <ListChecks className="h-3.5 w-3.5 text-green-400" />
+                <span>Protocolo guiado</span>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <ProtocolRunner
+                running={protocolRunning}
+                onStart={handleProtocolStart}
+                onStop={handleProtocolStop}
+                onPhaseEvent={handleProtocolEvent}
+                canStart={serial.isConnected}
+                currentTimestampMs={serial.data.length > 0 ? serial.data[serial.data.length - 1].timestamp_ms : 0}
+              />
             </CardContent>
           </Card>
 

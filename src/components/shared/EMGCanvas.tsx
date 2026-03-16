@@ -61,6 +61,8 @@ interface EMGCanvasProps {
   showRmsEnvelope?: boolean;
   showCalBar?: boolean;
   className?: string;
+  /** Called on each frame with the current auto-scale range (±µV) */
+  onAutoScaleChange?: (range: number) => void;
 }
 
 const MARGIN_LEFT = 52;
@@ -151,10 +153,22 @@ function computeRmsEnvelope(
 
 const EDGE_GRAB_PX = 6;
 
+/** Pick the next "nice" symmetric scale ±N from a set of nice values */
+function niceSymmetricScale(peakAbs: number): number {
+  if (peakAbs <= 0) return 10;
+  // Nice steps: 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000…
+  const mag = Math.pow(10, Math.floor(Math.log10(peakAbs)));
+  const norm = peakAbs / mag;
+  if (norm <= 1) return 1 * mag;
+  if (norm <= 2) return 2 * mag;
+  if (norm <= 5) return 5 * mag;
+  return 10 * mag;
+}
+
 export function EMGCanvas({
   data, frozen, markers = [], activePhase, pendingStartMs,
   onCanvasClick, onMarkerUpdate, scalePreset, showRmsEnvelope, showCalBar,
-  className,
+  className, onAutoScaleChange,
 }: EMGCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -167,6 +181,10 @@ export function EMGCanvas({
   const pxPerMsRef = useRef(0.1);
   const viewStartRef = useRef(0);
   const didDragRef = useRef(false);
+
+  // Smoothed auto-scale state
+  const autoScaleRef = useRef<number>(100); // current smoothed ±µV range
+  const autoScaleLastReport = useRef<number>(0);
 
   // Draggable marker edge state
   const draggingEdge = useRef<{ markerId: string; edge: "start" | "end"; origMs: number } | null>(null);
@@ -228,32 +246,64 @@ export function EMGCanvas({
     }
     const startIdx = Math.max(0, lo - 1);
 
-    // Y scale: preset or auto
+    // Y scale: preset or auto (smoothed)
     let yMin: number;
     let yMax: number;
     if (scalePreset != null && scalePreset > 0) {
       yMin = -scalePreset;
       yMax = scalePreset;
+      autoScaleRef.current = scalePreset;
     } else {
-      yMin = Infinity;
-      yMax = -Infinity;
+      // Find visible data peak
+      let visMin = Infinity;
+      let visMax = -Infinity;
       if (data.length >= 2) {
         for (let i = startIdx; i < data.length; i++) {
           const pt = data[i];
           if (pt.timestamp_ms > endTs) break;
           if (pt.timestamp_ms < startTs) continue;
-          if (pt.value < yMin) yMin = pt.value;
-          if (pt.value > yMax) yMax = pt.value;
+          if (pt.value < visMin) visMin = pt.value;
+          if (pt.value > visMax) visMax = pt.value;
         }
       }
-      if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) {
-        yMin = -10;
-        yMax = 10;
+      if (!isFinite(visMin) || !isFinite(visMax) || visMin === visMax) {
+        visMin = -10;
+        visMax = 10;
       }
-      const yRange = yMax - yMin;
-      const yPad = yRange * 0.12;
-      yMin -= yPad;
-      yMax += yPad;
+
+      // Desired symmetric range = nice step above peak absolute value + padding
+      const peakAbs = Math.max(Math.abs(visMin), Math.abs(visMax));
+      const desired = niceSymmetricScale(peakAbs * 1.15); // 15% padding
+
+      const prev = autoScaleRef.current;
+      let next: number;
+      if (desired > prev) {
+        // Expand fast (instant)
+        next = desired;
+      } else if (desired < prev * 0.5) {
+        // Shrink with decay when signal is much smaller (hysteresis)
+        next = prev * 0.92; // gradual shrink per frame
+        // Snap if close enough
+        if (next < desired * 1.05) next = desired;
+      } else {
+        // Within hysteresis band — keep current
+        next = prev;
+      }
+      // Enforce minimum
+      if (next < 5) next = 5;
+      autoScaleRef.current = next;
+
+      yMin = -next;
+      yMax = next;
+
+      // Report auto-scale to parent (throttled)
+      if (onAutoScaleChange) {
+        const rounded = Math.round(next);
+        if (rounded !== autoScaleLastReport.current) {
+          autoScaleLastReport.current = rounded;
+          onAutoScaleChange(rounded);
+        }
+      }
     }
 
     const valueToY = (v: number) => (1 - (v - yMin) / (yMax - yMin)) * plotH;
@@ -741,13 +791,25 @@ export function EMGCanvas({
         ctx.fill();
       }
     }
-  }, [data, frozen, scrollMs, totalMs, markers, activePhase, pendingStartMs, scalePreset, showRmsEnvelope, showCalBar]);
+  }, [data, frozen, scrollMs, totalMs, markers, activePhase, pendingStartMs, scalePreset, showRmsEnvelope, showCalBar, onAutoScaleChange]);
 
-  // RAF
+  // RAF — continuous loop when auto-scaling (for smooth shrink animation)
   useEffect(() => {
-    rafRef.current = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [draw]);
+    let running = true;
+    const loop = () => {
+      if (!running) return;
+      draw();
+      // Keep looping when recording (data changes) or auto-scale may be animating
+      if (!frozen || scalePreset == null) {
+        rafRef.current = requestAnimationFrame(loop);
+      }
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    return () => {
+      running = false;
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, [draw, frozen, scalePreset]);
 
   // Resize
   useEffect(() => {
