@@ -382,7 +382,7 @@ export function EMGMonitor() {
 
   const handleRenameMarker = useCallback((id: string, label: string) => {
     setPhaseMarkers(prev => prev.map(m =>
-      m.id === id ? { ...m, customLabel: label || undefined } : m
+      m.id === id ? { ...m, customLabel: label } : m
     ));
   }, []);
 
@@ -995,13 +995,14 @@ export function EMGMonitor() {
                       const cfg = EMG_PHASE_CONFIG[s.type];
                       const marker = phaseMarkers.find(m => m.id === s.id);
                       return (
-                        <div key={s.id} className="group rounded px-1.5 py-1 text-[10px]" style={{ borderLeft: `3px solid ${cfg.color}` }}>
+                        <div key={s.id} className="rounded px-1.5 py-1 text-[10px]" style={{ borderLeft: `3px solid ${cfg.color}` }}>
                           <div className="flex items-center justify-between gap-1">
                             <input
                               type="text"
-                              value={marker?.customLabel ?? cfg.label}
+                              value={marker?.customLabel != null ? marker.customLabel : cfg.label}
                               onChange={e => handleRenameMarker(s.id, e.target.value)}
-                              className="font-medium bg-transparent border-none outline-none w-full min-w-0 px-0 py-0 text-[10px]"
+                              placeholder={cfg.label}
+                              className="font-medium bg-transparent border-none outline-none w-full min-w-0 px-0 py-0 text-[10px] placeholder:opacity-40"
                               style={{ color: cfg.color }}
                               title="Editar nombre"
                             />
@@ -1010,7 +1011,7 @@ export function EMGMonitor() {
                             </span>
                             <button
                               onClick={() => handleDeleteMarker(s.id)}
-                              className="shrink-0 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 transition-opacity px-0.5"
+                              className="shrink-0 text-red-400/60 hover:text-red-300 transition-colors px-0.5"
                               title="Eliminar marcador"
                             >
                               ×
