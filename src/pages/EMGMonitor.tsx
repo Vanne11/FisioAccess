@@ -340,6 +340,7 @@ export function EMGMonitor() {
 
   // Phase marking (2-click system)
   const [pendingStart, setPendingStart] = useState<number | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const handlePhaseSelect = useCallback((type: EMGPhaseType) => {
     if (activePhase === type) {
@@ -384,6 +385,18 @@ export function EMGMonitor() {
     setPhaseMarkers(prev => prev.map(m =>
       m.id === id ? { ...m, customLabel: label } : m
     ));
+  }, []);
+
+  const handleMoveMarker = useCallback((id: string, direction: -1 | 1) => {
+    setPhaseMarkers(prev => {
+      const idx = prev.findIndex(m => m.id === id);
+      if (idx < 0) return prev;
+      const target = idx + direction;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next;
+    });
   }, []);
 
   // Protocol handlers
@@ -991,37 +1004,82 @@ export function EMGMonitor() {
                 {markerStats.length > 0 && (
                   <>
                     <div className="h-px bg-surface-600 my-1" />
-                    {markerStats.map((s) => {
+                    {markerStats.map((s, idx) => {
                       const cfg = EMG_PHASE_CONFIG[s.type];
                       const marker = phaseMarkers.find(m => m.id === s.id);
+                      const isConfirming = confirmDeleteId === s.id;
                       return (
                         <div key={s.id} className="rounded px-1.5 py-1 text-[10px]" style={{ borderLeft: `3px solid ${cfg.color}` }}>
-                          <div className="flex items-center justify-between gap-1">
-                            <input
-                              type="text"
-                              value={marker?.customLabel != null ? marker.customLabel : cfg.label}
-                              onChange={e => handleRenameMarker(s.id, e.target.value)}
-                              placeholder={cfg.label}
-                              className="font-medium bg-transparent border-none outline-none w-full min-w-0 px-0 py-0 text-[10px] placeholder:opacity-40"
-                              style={{ color: cfg.color }}
-                              title="Editar nombre"
-                            />
-                            <span className="text-secondary shrink-0">
-                              {s.open ? "REC" : s.dur >= 1000 ? `${(s.dur / 1000).toFixed(1)}s` : `${s.dur.toFixed(0)}ms`}
-                            </span>
-                            <button
-                              onClick={() => handleDeleteMarker(s.id)}
-                              className="shrink-0 text-red-400/60 hover:text-red-300 transition-colors px-0.5"
-                              title="Eliminar marcador"
-                            >
-                              ×
-                            </button>
-                          </div>
-                          {s.count > 0 && (
-                            <div className="flex gap-2 text-secondary mt-0.5">
-                              <span>P-P:<span className="font-mono text-primary ml-0.5">{s.amplitude.toFixed(1)}</span></span>
-                              <span>RMS:<span className="font-mono text-primary ml-0.5">{s.rms.toFixed(1)}</span></span>
+                          {isConfirming ? (
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-red-400">Eliminar?</span>
+                              <div className="flex gap-1">
+                                <button
+                                  onClick={() => { handleDeleteMarker(s.id); setConfirmDeleteId(null); }}
+                                  className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+                                >
+                                  Si
+                                </button>
+                                <button
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="px-1.5 py-0.5 rounded bg-surface-700 text-secondary hover:text-primary transition-colors"
+                                >
+                                  No
+                                </button>
+                              </div>
                             </div>
+                          ) : (
+                            <>
+                              <div className="flex items-center justify-between gap-1">
+                                <input
+                                  type="text"
+                                  value={marker?.customLabel != null ? marker.customLabel : cfg.label}
+                                  onChange={e => handleRenameMarker(s.id, e.target.value)}
+                                  placeholder={cfg.label}
+                                  className="font-medium bg-transparent border-none outline-none w-full min-w-0 px-0 py-0 text-[10px] placeholder:opacity-40"
+                                  style={{ color: cfg.color }}
+                                  title="Editar nombre"
+                                />
+                                <span className="text-secondary shrink-0">
+                                  {s.open ? "REC" : s.dur >= 1000 ? `${(s.dur / 1000).toFixed(1)}s` : `${s.dur.toFixed(0)}ms`}
+                                </span>
+                                <div className="flex items-center shrink-0">
+                                  {markerStats.length > 1 && (
+                                    <>
+                                      <button
+                                        onClick={() => handleMoveMarker(s.id, -1)}
+                                        disabled={idx === 0}
+                                        className="text-secondary hover:text-primary disabled:opacity-20 transition-colors px-0.5"
+                                        title="Mover arriba"
+                                      >
+                                        ▲
+                                      </button>
+                                      <button
+                                        onClick={() => handleMoveMarker(s.id, 1)}
+                                        disabled={idx === markerStats.length - 1}
+                                        className="text-secondary hover:text-primary disabled:opacity-20 transition-colors px-0.5"
+                                        title="Mover abajo"
+                                      >
+                                        ▼
+                                      </button>
+                                    </>
+                                  )}
+                                  <button
+                                    onClick={() => setConfirmDeleteId(s.id)}
+                                    className="text-red-400/60 hover:text-red-300 transition-colors px-0.5"
+                                    title="Eliminar marcador"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              </div>
+                              {s.count > 0 && (
+                                <div className="flex gap-2 text-secondary mt-0.5">
+                                  <span>P-P:<span className="font-mono text-primary ml-0.5">{s.amplitude.toFixed(1)}</span></span>
+                                  <span>RMS:<span className="font-mono text-primary ml-0.5">{s.rms.toFixed(1)}</span></span>
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       );
