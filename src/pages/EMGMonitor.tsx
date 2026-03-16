@@ -185,14 +185,27 @@ function renderFullSignalImage(
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
-    // Phase label at top
-    const labelX = (x1 + x2) / 2;
+    // Phase label (respects position and rotation from canvas)
+    const labelCenterX = (x1 + x2) / 2 + (m.labelX ?? 0);
     if (x2 - x1 > 25) {
+      const lY = 3 + (m.labelY ?? 0);
+      const angleDeg = m.labelAngle ?? 0;
+      const angleRad = (angleDeg * Math.PI) / 180;
+
+      ctx.save();
+      ctx.translate(labelCenterX, lY + 5);
+      ctx.rotate(angleRad);
+
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      const tw = Math.min(x2 - x1 - 4, 120);
+      ctx.fillRect(-tw / 2, -6, tw, 14);
+
       ctx.fillStyle = cfg.color;
       ctx.font = "bold 9px monospace";
       ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      ctx.fillText(m.customLabel || cfg.label, labelX, 3);
+      ctx.textBaseline = "middle";
+      ctx.fillText(m.customLabel || cfg.label, 0, 0);
+      ctx.restore();
     }
   }
 
@@ -797,7 +810,7 @@ export function EMGMonitor() {
 
           {(frozen || !serial.recording) && serial.data.length > 0 && (
             <p className="text-xs text-secondary text-center">
-              Rueda o arrastra para navegar | Arrastra etiquetas para mover | Shift+arrastra para girar
+              Arrastra etiquetas para mover | R para girar (+15°) | Shift+R (-15°)
             </p>
           )}
         </div>

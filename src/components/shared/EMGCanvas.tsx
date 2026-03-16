@@ -61,7 +61,7 @@ interface EMGCanvasProps {
   pendingStartMs?: number | null;
   onCanvasClick?: (timestamp_ms: number) => void;
   onMarkerUpdate?: (id: string, startMs: number, endMs: number) => void;
-  /** Drag = mover (X+Y), Shift+drag = girar */
+  /** Drag = mover (X+Y), R = girar +15°, Shift+R = girar -15° */
   onMarkerLabelTransform?: (id: string, labelX: number, labelY: number, labelAngle: number) => void;
   scalePreset?: number | null; // ±N µV, null = auto
   showRmsEnvelope?: boolean;
@@ -194,7 +194,7 @@ export function EMGCanvas({
 
   // Draggable marker edge state
   const draggingEdge = useRef<{ markerId: string; edge: "start" | "end"; origMs: number } | null>(null);
-  // Draggable label state: drag = mover XY, shift+drag = girar
+  // Draggable label state: drag = mover XY, R key = girar
   const draggingLabel = useRef<{
     markerId: string;
     mode: "move" | "rotate";
@@ -206,6 +206,7 @@ export function EMGCanvas({
   } | null>(null);
   const labelRectsRef = useRef<{ id: string; x: number; y: number; w: number; h: number }[]>([]);
   const [cursorStyle, setCursorStyle] = useState<string>("default");
+  const lastMousePosRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!frozen) setScrollMs(0);
@@ -773,13 +774,13 @@ export function EMGCanvas({
         }
         ctx.globalAlpha = 1;
 
-        // Shift hint when not rotated
-        if (angleDeg === 0) {
-          ctx.fillStyle = "rgba(255,255,255,0.15)";
+        // Rotate hint icon
+        if (angleDeg !== 0) {
+          ctx.fillStyle = "rgba(255,255,255,0.25)";
           ctx.font = "7px monospace";
           ctx.textAlign = "right";
           ctx.textBaseline = "bottom";
-          ctx.fillText("⟲", textW / 2 - 2, -lH / 2 + lH - 1);
+          ctx.fillText(`${angleDeg}°`, textW / 2 - 2, -lH / 2 + lH - 1);
         }
 
         ctx.restore();
@@ -874,6 +875,38 @@ export function EMGCanvas({
     return () => ro.disconnect();
   }, [draw]);
 
+  // Rotate label with R key (no mode, no drag — just press R while hovering)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !onMarkerLabelTransform) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "r" && e.key !== "R") return;
+      const pos = lastMousePosRef.current;
+      if (!pos) return;
+
+      // Hit-test against label rects using stored client coords
+      const rect = container.getBoundingClientRect();
+      const px = pos.x - rect.left;
+      const py = pos.y - rect.top;
+      for (const lr of labelRectsRef.current) {
+        if (px >= lr.x && px <= lr.x + lr.w && py >= lr.y && py <= lr.y + lr.h) {
+          e.preventDefault();
+          const marker = markers.find(m => m.id === lr.id);
+          if (marker) {
+            const delta = e.shiftKey ? -15 : 15;
+            const newAngle = (marker.labelAngle ?? 0) + delta;
+            onMarkerLabelTransform(marker.id, marker.labelX ?? 0, marker.labelY ?? 0, newAngle);
+          }
+          return;
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [markers, onMarkerLabelTransform]);
+
   // Find if mouse is near a marker edge
   const findNearEdge = useCallback((clientX: number): { markerId: string; edge: "start" | "end"; ms: number } | null => {
     if (!frozen || !containerRef.current) return null;
@@ -896,7 +929,21 @@ export function EMGCanvas({
     return null;
   }, [frozen, markers]);
 
-  // Wheel scroll
+  // Find if mouse is over a label rect
+  const findLabelHit = useCallback((clientX: number, clientY: number): string | null => {
+    if (!containerRef.current) return null;
+    const rect = containerRef.current.getBoundingClientRect();
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    for (const lr of labelRectsRef.current) {
+      if (px >= lr.x && px <= lr.x + lr.w && py >= lr.y && py <= lr.y + lr.h) {
+        return lr.id;
+      }
+    }
+    return null;
+  }, []);
+
+  // Wheel: scroll timeline
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       if (!frozen || data.length < 2) return;
@@ -914,32 +961,18 @@ export function EMGCanvas({
     [frozen, data, totalMs],
   );
 
-  // Find if mouse is over a label rect
-  const findLabelHit = useCallback((clientX: number, clientY: number): string | null => {
-    if (!containerRef.current) return null;
-    const rect = containerRef.current.getBoundingClientRect();
-    const px = clientX - rect.left;
-    const py = clientY - rect.top;
-    for (const lr of labelRectsRef.current) {
-      if (px >= lr.x && px <= lr.x + lr.w && py >= lr.y && py <= lr.y + lr.h) {
-        return lr.id;
-      }
-    }
-    return null;
-  }, []);
-
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!frozen) return;
 
-      // Check for label drag (normal = move XY, Shift = rotate)
+      // Check for label drag (move XY)
       if (onMarkerLabelTransform) {
         const labelId = findLabelHit(e.clientX, e.clientY);
         if (labelId) {
           const marker = markers.find(m => m.id === labelId);
           draggingLabel.current = {
             markerId: labelId,
-            mode: e.shiftKey ? "rotate" : "move",
+            mode: "move",
             startMouseX: e.clientX,
             startMouseY: e.clientY,
             startLabelX: marker?.labelX ?? 0,
@@ -970,6 +1003,9 @@ export function EMGCanvas({
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Track mouse position for R-key rotation hit-test
+      lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+
       // Handle label dragging (move XY or rotate)
       if (draggingLabel.current && onMarkerLabelTransform) {
         const dl = draggingLabel.current;
@@ -1008,7 +1044,7 @@ export function EMGCanvas({
       if (!isDragging.current && !draggingLabel.current && frozen) {
         const labelHit = onMarkerLabelTransform ? findLabelHit(e.clientX, e.clientY) : null;
         if (labelHit) {
-          setCursorStyle(e.shiftKey ? "alias" : "move");
+          setCursorStyle("move");
         } else if (onMarkerUpdate) {
           const edge = findNearEdge(e.clientX);
           if (edge) {
@@ -1066,6 +1102,7 @@ export function EMGCanvas({
     isDragging.current = false;
     draggingEdge.current = null;
     draggingLabel.current = null;
+    lastMousePosRef.current = null;
   }, []);
 
   const cursor = frozen
