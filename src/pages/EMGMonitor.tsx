@@ -387,6 +387,12 @@ export function EMGMonitor() {
     ));
   }, []);
 
+  const handleMarkerLabelTransform = useCallback((id: string, labelX: number, labelY: number, labelAngle: number) => {
+    setPhaseMarkers(prev => prev.map(m =>
+      m.id === id ? { ...m, labelX, labelY, labelAngle } : m
+    ));
+  }, []);
+
   const handleMoveMarker = useCallback((id: string, direction: -1 | 1) => {
     setPhaseMarkers(prev => {
       const idx = prev.findIndex(m => m.id === id);
@@ -755,6 +761,7 @@ export function EMGMonitor() {
                   pendingStartMs={pendingStart}
                   onCanvasClick={handleCanvasClick}
                   onMarkerUpdate={handleMarkerUpdate}
+                  onMarkerLabelTransform={handleMarkerLabelTransform}
                   scalePreset={scalePreset}
                   showRmsEnvelope={showRmsEnvelope}
                   showCalBar={showCalBar}
@@ -790,7 +797,7 @@ export function EMGMonitor() {
 
           {(frozen || !serial.recording) && serial.data.length > 0 && (
             <p className="text-xs text-secondary text-center">
-              Rueda o arrastra para navegar | Arrastra bordes de marcador para ajustar
+              Rueda o arrastra para navegar | Arrastra etiquetas para mover | Shift+arrastra para girar
             </p>
           )}
         </div>

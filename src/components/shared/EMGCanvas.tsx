@@ -13,6 +13,9 @@ export interface EMGPhaseMarker {
   startMs: number;
   endMs: number | null; // null = en curso
   customLabel?: string; // nombre editable por el usuario
+  labelX?: number;      // offset X en px de la etiqueta (default 0 = centrada en fase)
+  labelY?: number;      // offset Y en px de la etiqueta (default 0 = top)
+  labelAngle?: number;  // rotación en grados de la etiqueta (default 0)
 }
 
 export interface EMGPhaseStats {
@@ -58,6 +61,8 @@ interface EMGCanvasProps {
   pendingStartMs?: number | null;
   onCanvasClick?: (timestamp_ms: number) => void;
   onMarkerUpdate?: (id: string, startMs: number, endMs: number) => void;
+  /** Drag = mover (X+Y), Shift+drag = girar */
+  onMarkerLabelTransform?: (id: string, labelX: number, labelY: number, labelAngle: number) => void;
   scalePreset?: number | null; // ±N µV, null = auto
   showRmsEnvelope?: boolean;
   showCalBar?: boolean;
@@ -168,7 +173,7 @@ function niceSymmetricScale(peakAbs: number): number {
 
 export function EMGCanvas({
   data, frozen, markers = [], activePhase, pendingStartMs,
-  onCanvasClick, onMarkerUpdate, scalePreset, showRmsEnvelope, showCalBar,
+  onCanvasClick, onMarkerUpdate, onMarkerLabelTransform, scalePreset, showRmsEnvelope, showCalBar,
   className, onAutoScaleChange,
 }: EMGCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -189,6 +194,17 @@ export function EMGCanvas({
 
   // Draggable marker edge state
   const draggingEdge = useRef<{ markerId: string; edge: "start" | "end"; origMs: number } | null>(null);
+  // Draggable label state: drag = mover XY, shift+drag = girar
+  const draggingLabel = useRef<{
+    markerId: string;
+    mode: "move" | "rotate";
+    startMouseX: number;
+    startMouseY: number;
+    startLabelX: number;
+    startLabelY: number;
+    startAngle: number;
+  } | null>(null);
+  const labelRectsRef = useRef<{ id: string; x: number; y: number; w: number; h: number }[]>([]);
   const [cursorStyle, setCursorStyle] = useState<string>("default");
 
   useEffect(() => {
@@ -587,6 +603,7 @@ export function EMGCanvas({
     }
 
     // --- Phase markers PASS 2: annotations ON TOP of trace ---
+    const labelRects: { id: string; x: number; y: number; w: number; h: number }[] = [];
     for (const m of markers) {
       const cfg = EMG_PHASE_CONFIG[m.type];
       const mStart = m.startMs;
@@ -712,33 +729,66 @@ export function EMGCanvas({
         }
       }
 
-      // --- Phase label + stats at top ---
-      const labelX = (cx1 + cx2) / 2;
+      // --- Phase label + stats (draggable + rotatable) ---
+      const labelX = (cx1 + cx2) / 2 + (m.labelX ?? 0);
       if (cx2 - cx1 > 30) {
+        const lBaseY = 1 + (m.labelY ?? 0);
+        const lH = 30;
+        const textW = Math.min(cx2 - cx1 - 4, 140);
+        const angleDeg = m.labelAngle ?? 0;
+        const angleRad = (angleDeg * Math.PI) / 180;
+
+        // Clamp to plot area
+        const lY = Math.max(0, Math.min(plotH - lH, lBaseY));
+
+        ctx.save();
+        ctx.translate(labelX, lY + lH / 2);
+        ctx.rotate(angleRad);
+
         // Background for text readability
         ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-        const textW = Math.min(cx2 - cx1 - 4, 140);
-        ctx.fillRect(labelX - textW / 2, 1, textW, 30);
+        ctx.fillRect(-textW / 2, -lH / 2, textW, lH);
+
+        // Drag handle hint (small grip dots)
+        ctx.fillStyle = "rgba(255,255,255,0.2)";
+        for (let dy = -7; dy <= 1; dy += 4) {
+          ctx.fillRect(-textW / 2 + 3, dy, 2, 2);
+        }
 
         ctx.fillStyle = cfg.color;
         ctx.font = "bold 9px monospace";
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(m.customLabel || cfg.label, labelX, 3);
+        ctx.fillText(m.customLabel || cfg.label, 0, -lH / 2 + 2);
 
         // Stats line 1: duration + RMS
         const durMs = mEnd - mStart;
         const durStr = durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs.toFixed(0)}ms`;
         ctx.font = "8px monospace";
         ctx.globalAlpha = 0.8;
-        ctx.fillText(`${durStr} | RMS:${rmsVal.toFixed(1)}µV`, labelX, 14);
+        ctx.fillText(`${durStr} | RMS:${rmsVal.toFixed(1)}µV`, 0, -lH / 2 + 13);
         // Stats line 2: P-P
         if (amplitude > 0) {
-          ctx.fillText(`P-P:${amplitude.toFixed(1)}µV`, labelX, 23);
+          ctx.fillText(`P-P:${amplitude.toFixed(1)}µV`, 0, -lH / 2 + 22);
         }
         ctx.globalAlpha = 1;
+
+        // Shift hint when not rotated
+        if (angleDeg === 0) {
+          ctx.fillStyle = "rgba(255,255,255,0.15)";
+          ctx.font = "7px monospace";
+          ctx.textAlign = "right";
+          ctx.textBaseline = "bottom";
+          ctx.fillText("⟲", textW / 2 - 2, -lH / 2 + lH - 1);
+        }
+
+        ctx.restore();
+
+        // Store rect for hit-testing (axis-aligned bounding box)
+        labelRects.push({ id: m.id, x: labelX - textW / 2, y: lY, w: textW, h: lH });
       }
     }
+    labelRectsRef.current = labelRects;
 
     // Pending marker line
     if (pendingStartMs != null && activePhase) {
@@ -864,9 +914,42 @@ export function EMGCanvas({
     [frozen, data, totalMs],
   );
 
+  // Find if mouse is over a label rect
+  const findLabelHit = useCallback((clientX: number, clientY: number): string | null => {
+    if (!containerRef.current) return null;
+    const rect = containerRef.current.getBoundingClientRect();
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    for (const lr of labelRectsRef.current) {
+      if (px >= lr.x && px <= lr.x + lr.w && py >= lr.y && py <= lr.y + lr.h) {
+        return lr.id;
+      }
+    }
+    return null;
+  }, []);
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!frozen) return;
+
+      // Check for label drag (normal = move XY, Shift = rotate)
+      if (onMarkerLabelTransform) {
+        const labelId = findLabelHit(e.clientX, e.clientY);
+        if (labelId) {
+          const marker = markers.find(m => m.id === labelId);
+          draggingLabel.current = {
+            markerId: labelId,
+            mode: e.shiftKey ? "rotate" : "move",
+            startMouseX: e.clientX,
+            startMouseY: e.clientY,
+            startLabelX: marker?.labelX ?? 0,
+            startLabelY: marker?.labelY ?? 0,
+            startAngle: marker?.labelAngle ?? 0,
+          };
+          e.preventDefault();
+          return;
+        }
+      }
 
       // Check for marker edge drag
       const edge = findNearEdge(e.clientX);
@@ -882,11 +965,25 @@ export function EMGCanvas({
       dragStartOff.current = scrollMs;
       e.preventDefault();
     },
-    [frozen, scrollMs, findNearEdge, onMarkerUpdate],
+    [frozen, scrollMs, findNearEdge, onMarkerUpdate, onMarkerLabelTransform, markers, findLabelHit],
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Handle label dragging (move XY or rotate)
+      if (draggingLabel.current && onMarkerLabelTransform) {
+        const dl = draggingLabel.current;
+        const dx = e.clientX - dl.startMouseX;
+        const dy = e.clientY - dl.startMouseY;
+        if (dl.mode === "rotate") {
+          const newAngle = dl.startAngle + dx * 0.5;
+          onMarkerLabelTransform(dl.markerId, dl.startLabelX, dl.startLabelY, Math.round(newAngle));
+        } else {
+          onMarkerLabelTransform(dl.markerId, dl.startLabelX + dx, dl.startLabelY + dy, dl.startAngle);
+        }
+        return;
+      }
+
       // Handle marker edge dragging
       if (draggingEdge.current && onMarkerUpdate) {
         const container = containerRef.current;
@@ -907,15 +1004,20 @@ export function EMGCanvas({
         return;
       }
 
-      // Cursor hint for edges
-      if (!isDragging.current && frozen && onMarkerUpdate) {
-        const edge = findNearEdge(e.clientX);
-        if (edge) {
-          setCursorStyle("col-resize");
-        } else if (activePhase) {
-          setCursorStyle("crosshair");
-        } else {
-          setCursorStyle("grab");
+      // Cursor hint for labels and edges
+      if (!isDragging.current && !draggingLabel.current && frozen) {
+        const labelHit = onMarkerLabelTransform ? findLabelHit(e.clientX, e.clientY) : null;
+        if (labelHit) {
+          setCursorStyle(e.shiftKey ? "alias" : "move");
+        } else if (onMarkerUpdate) {
+          const edge = findNearEdge(e.clientX);
+          if (edge) {
+            setCursorStyle("col-resize");
+          } else if (activePhase) {
+            setCursorStyle("crosshair");
+          } else {
+            setCursorStyle("grab");
+          }
         }
       }
 
@@ -930,11 +1032,16 @@ export function EMGCanvas({
       const maxOff = Math.max(0, total - desiredVisibleMs);
       setScrollMs(Math.max(0, Math.min(maxOff, dragStartOff.current + dtMs)));
     },
-    [frozen, data, totalMs, markers, activePhase, onMarkerUpdate, findNearEdge],
+    [frozen, data, totalMs, markers, activePhase, onMarkerUpdate, onMarkerLabelTransform, findNearEdge, findLabelHit],
   );
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
+      if (draggingLabel.current) {
+        draggingLabel.current = null;
+        return;
+      }
+
       if (draggingEdge.current) {
         draggingEdge.current = null;
         return;
@@ -958,6 +1065,7 @@ export function EMGCanvas({
   const handleMouseLeave = useCallback(() => {
     isDragging.current = false;
     draggingEdge.current = null;
+    draggingLabel.current = null;
   }, []);
 
   const cursor = frozen
