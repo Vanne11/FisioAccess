@@ -13,8 +13,8 @@ export interface EMGPhaseMarker {
   startMs: number;
   endMs: number | null; // null = en curso
   customLabel?: string; // nombre editable por el usuario
-  labelX?: number;      // offset X en px de la etiqueta (default 0 = centrada en fase)
-  labelY?: number;      // offset Y en px de la etiqueta (default 0 = top)
+  labelX?: number;      // offset X en ms de la etiqueta (default 0 = centrada en fase)
+  labelY?: number;      // offset Y como fracción de plotH (default 0 = top)
   labelAngle?: number;  // rotación en grados de la etiqueta (default 0)
 }
 
@@ -731,9 +731,9 @@ export function EMGCanvas({
       }
 
       // --- Phase label + stats (draggable + rotatable) ---
-      const labelX = (cx1 + cx2) / 2 + (m.labelX ?? 0);
+      const labelX = (cx1 + cx2) / 2 + (m.labelX ?? 0) * pxPerMs;
       if (cx2 - cx1 > 30) {
-        const lBaseY = 1 + (m.labelY ?? 0);
+        const lBaseY = 1 + (m.labelY ?? 0) * plotH;
         const lH = 30;
         const textW = Math.min(cx2 - cx1 - 4, 140);
         const angleDeg = m.labelAngle ?? 0;
@@ -1015,7 +1015,12 @@ export function EMGCanvas({
           const newAngle = dl.startAngle + dx * 0.5;
           onMarkerLabelTransform(dl.markerId, dl.startLabelX, dl.startLabelY, Math.round(newAngle));
         } else {
-          onMarkerLabelTransform(dl.markerId, dl.startLabelX + dx, dl.startLabelY + dy, dl.startAngle);
+          // Convert pixel deltas to ms (X) and fraction of plotH (Y)
+          const dxMs = pxPerMsRef.current > 0 ? dx / pxPerMsRef.current : 0;
+          const container = containerRef.current;
+          const currentPlotH = container ? (frozen ? container.clientHeight - SCROLLBAR_H : container.clientHeight) - MARGIN_BOTTOM : 1;
+          const dyFrac = currentPlotH > 0 ? dy / currentPlotH : 0;
+          onMarkerLabelTransform(dl.markerId, dl.startLabelX + dxMs, dl.startLabelY + dyFrac, dl.startAngle);
         }
         return;
       }

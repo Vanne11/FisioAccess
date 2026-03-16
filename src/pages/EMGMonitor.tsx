@@ -186,9 +186,9 @@ function renderFullSignalImage(
     ctx.globalAlpha = 1;
 
     // Phase label (respects position and rotation from canvas)
-    const labelCenterX = (x1 + x2) / 2 + (m.labelX ?? 0);
+    const labelCenterX = (x1 + x2) / 2 + (m.labelX ?? 0) * pxPerMs;
     if (x2 - x1 > 25) {
-      const lY = 3 + (m.labelY ?? 0);
+      const lY = 3 + (m.labelY ?? 0) * plotH;
       const angleDeg = m.labelAngle ?? 0;
       const angleRad = (angleDeg * Math.PI) / 180;
 
