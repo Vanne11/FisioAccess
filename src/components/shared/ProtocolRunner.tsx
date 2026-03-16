@@ -63,6 +63,80 @@ interface ProtocolRunnerProps {
 
 const COUNTDOWN_SEC = 3;
 
+/* ── Estímulos sonoros con Web Audio API ── */
+// Frecuencias por fase (Hz) — distintas para distinguirlas de oído
+const PHASE_FREQ: Record<EMGPhaseType, number> = {
+  reposo: 440,       // A4 — tono suave
+  leve: 523,         // C5 — medio
+  maxima: 659,       // E5 — agudo
+  relajacion: 392,   // G4 — grave/relajado
+};
+
+let _audioCtx: AudioContext | null = null;
+function getAudioCtx(): AudioContext {
+  if (!_audioCtx) _audioCtx = new AudioContext();
+  return _audioCtx;
+}
+
+/** Beep corto para cuenta regresiva (tick) */
+function playTick() {
+  const ctx = getAudioCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = 880;
+  gain.gain.setValueAtTime(0.15, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.08);
+}
+
+/** Beep largo al iniciar una fase — tono diferente por fase */
+function playPhaseStart(phase: EMGPhaseType) {
+  const ctx = getAudioCtx();
+  const freq = PHASE_FREQ[phase];
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0.25, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.35);
+}
+
+/** Doble beep al finalizar el protocolo */
+function playProtocolEnd() {
+  const ctx = getAudioCtx();
+  [0, 0.15].forEach(delay => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 1047; // C6
+    gain.gain.setValueAtTime(0.2, ctx.currentTime + delay);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.12);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(ctx.currentTime + delay);
+    osc.stop(ctx.currentTime + delay + 0.12);
+  });
+}
+
+/** Beep de aviso 3 segundos antes de que termine la fase */
+function playWarning() {
+  const ctx = getAudioCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "triangle";
+  osc.frequency.value = 660;
+  gain.gain.setValueAtTime(0.1, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.06);
+}
+
 export function ProtocolRunner({
   running,
   onStart,
@@ -78,6 +152,7 @@ export function ProtocolRunner({
   const [countdownLeft, setCountdownLeft] = useState(0);
   const [showConfig, setShowConfig] = useState(false);
   const [autoStop, setAutoStop] = useState(true);
+  const [soundEnabled, setSoundEnabled] = useState(true);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTsRef = useRef(0);
@@ -92,6 +167,8 @@ export function ProtocolRunner({
   protocolRef.current = protocol;
   const autoStopRef = useRef(autoStop);
   autoStopRef.current = autoStop;
+  const soundRef = useRef(soundEnabled);
+  soundRef.current = soundEnabled;
   const beginStepRef = useRef<(idx: number) => void>(() => {});
 
   const clearTimer = useCallback(() => {
@@ -120,6 +197,7 @@ export function ProtocolRunner({
     const proto = protocolRef.current;
     if (idx >= proto.length) {
       setState("finished");
+      if (soundRef.current) playProtocolEnd();
       onPhaseEventRef.current({ type: "protocol-end", phase: proto[proto.length - 1].phase, stepIndex: idx - 1, timestampMs: currentTsRef.current, autoStop: autoStopRef.current });
       clearTimer();
       return;
@@ -130,6 +208,7 @@ export function ProtocolRunner({
     setElapsed(0);
     phaseStartTsRef.current = currentTsRef.current;
 
+    if (soundRef.current) playPhaseStart(proto[idx].phase);
     onPhaseEventRef.current({ type: "phase-start", phase: proto[idx].phase, stepIndex: idx, timestampMs: currentTsRef.current });
 
     const duration = proto[idx].durationSec;
@@ -138,6 +217,8 @@ export function ProtocolRunner({
     intervalRef.current = setInterval(() => {
       sec++;
       setElapsed(sec);
+      // Beep de aviso 3s antes del fin (solo si la fase dura más de 3s)
+      if (soundRef.current && duration > 3 && sec === duration - 3) playWarning();
       if (sec >= duration) {
         clearTimer();
         onPhaseEventRef.current({ type: "phase-end", phase: proto[idx].phase, stepIndex: idx, timestampMs: currentTsRef.current });
@@ -156,10 +237,12 @@ export function ProtocolRunner({
     setElapsed(0);
 
     let count = COUNTDOWN_SEC;
+    if (soundRef.current) playTick();
     clearTimer();
     intervalRef.current = setInterval(() => {
       count--;
       setCountdownLeft(count);
+      if (soundRef.current && count > 0) playTick();
       if (count <= 0) {
         clearTimer();
         beginStepRef.current(0);
@@ -249,6 +332,15 @@ export function ProtocolRunner({
               className="w-3 h-3 rounded border-surface-600 accent-green-500"
             />
             <span className="text-[10px] text-secondary">Detener grabación al finalizar</span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={soundEnabled}
+              onChange={e => setSoundEnabled(e.target.checked)}
+              className="w-3 h-3 rounded border-surface-600 accent-green-500"
+            />
+            <span className="text-[10px] text-secondary">Estímulos sonoros</span>
           </label>
           <div className="text-[9px] text-secondary mt-1 text-center">
             Total: {protocol.reduce((s, p) => s + p.durationSec, 0)}s + {COUNTDOWN_SEC}s cuenta regresiva
