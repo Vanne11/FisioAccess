@@ -1,6 +1,5 @@
 //! Grabación de datos a CSV
 
-use fisio_core::DataPoint;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;

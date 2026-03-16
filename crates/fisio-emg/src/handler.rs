@@ -1,9 +1,10 @@
 //! Handler para dispositivo EMG
 
-use fisio_core::{DeviceType, SerialConfig, ConnectionState, DataPoint, FilterParams, CalibrationResult};
+use fisio_core::{ConnectionState, DataPoint};
 use fisio_serial::SerialManager;
 
 /// Handler para procesamiento de señales EMG
+#[allow(dead_code)]
 pub struct EmgHandler {
     serial: SerialManager,
     state: ConnectionState,

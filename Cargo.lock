@@ -312,9 +312,11 @@ dependencies = [
 name = "fisio-http"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "fisio-core",
  "reqwest",
  "serde",
+ "serde_json",
  "tokio",
  "tungstenite",
 ]
@@ -334,6 +336,7 @@ dependencies = [
 name = "fisio-spiro"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "fisio-core",
  "fisio-serial",
  "log",

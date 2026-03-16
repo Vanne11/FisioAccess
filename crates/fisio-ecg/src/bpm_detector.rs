@@ -3,6 +3,7 @@
 use fisio_core::DataPoint;
 
 /// Detector de picos R para cálculo de BPM
+#[allow(dead_code)]
 pub struct BpmDetector {
     threshold: f64,
     auto_threshold: bool,

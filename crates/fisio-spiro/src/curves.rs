@@ -1,7 +1,5 @@
 //! Cálculo de curvas para espirómetro
 
-use fisio_core::DataPoint;
-
 /// Curvas de prueba de espirómetro
 #[derive(Debug, Clone, Default)]
 pub struct SpiroCurves {

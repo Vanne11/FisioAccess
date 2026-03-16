@@ -1,7 +1,6 @@
 //! Gestor de conexiones seriales
 
-use fisio_core::{SerialConfig, ConnectionState, DeviceType};
-use tokio::sync::mpsc;
+use fisio_core::{SerialConfig, ConnectionState};
 
 /// Gestor principal de conexiones seriales
 pub struct SerialManager {

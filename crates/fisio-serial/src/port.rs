@@ -1,7 +1,5 @@
 //! Manejo de puertos seriales
 
-use serialport::SerialPortInfo as SystemPortInfo;
-
 /// Información de un puerto serial
 #[derive(Debug, Clone)]
 pub struct SerialPortInfo {

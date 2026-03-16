@@ -1,10 +1,11 @@
 //! Handler para espirómetro
 
-use fisio_core::{SerialConfig, ConnectionState, DataPoint};
+use fisio_core::ConnectionState;
 use fisio_serial::SerialManager;
-use test_manager::TestRecord;
+use crate::test_manager::TestRecord;
 
 /// Handler para procesamiento de espirómetro
+#[allow(dead_code)]
 pub struct SpiroHandler {
     serial: SerialManager,
     state: ConnectionState,

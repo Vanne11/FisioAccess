@@ -1,9 +1,10 @@
 //! Handler para dispositivo ECG
 
-use fisio_core::{DeviceType, SerialConfig, ConnectionState, DataPoint, FilterParams};
+use fisio_core::{ConnectionState, DataPoint};
 use fisio_serial::SerialManager;
 
 /// Handler para procesamiento de señales ECG
+#[allow(dead_code)]
 pub struct EcgHandler {
     serial: SerialManager,
     state: ConnectionState,

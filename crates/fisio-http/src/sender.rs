@@ -1,6 +1,5 @@
 //! Envío de datos por HTTP
 
-use fisio_core::DataPoint;
 use reqwest::Client;
 
 /// Enviador de datos a servidor HTTP

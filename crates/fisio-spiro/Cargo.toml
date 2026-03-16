@@ -10,3 +10,4 @@ fisio-serial = { path = "../fisio-serial" }
 tokio.workspace = true
 serde.workspace = true
 log.workspace = true
+chrono.workspace = true
