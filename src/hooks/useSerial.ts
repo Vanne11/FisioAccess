@@ -174,6 +174,12 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500, mode?: str
     setData([]);
   }, []);
 
+  // Auto-scan ports on mount
+  useEffect(() => {
+    refreshPorts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {

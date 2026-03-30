@@ -96,8 +96,22 @@ function renderFullSignalImage(
   ctx.fillStyle = theme.bg;
   ctx.fillRect(0, 0, W, H);
 
-  const startTs = data[0].timestamp_ms;
-  const endTs = data[data.length - 1].timestamp_ms;
+  // If there are completed markers, crop data to marker range with small padding
+  // so the report only shows the relevant protocol window (no countdown leftovers)
+  const completedMarkers = markers.filter(m => m.endMs != null);
+  let cropData = data;
+  if (completedMarkers.length > 0) {
+    const markerStart = Math.min(...completedMarkers.map(m => m.startMs));
+    const markerEnd = Math.max(...completedMarkers.map(m => m.endMs!));
+    const PAD_MS = 300; // small visual margin
+    const cropStart = markerStart - PAD_MS;
+    const cropEnd = markerEnd + PAD_MS;
+    cropData = data.filter(pt => pt.timestamp_ms >= cropStart && pt.timestamp_ms <= cropEnd);
+    if (cropData.length < 2) cropData = data; // fallback
+  }
+
+  const startTs = cropData[0].timestamp_ms;
+  const endTs = cropData[cropData.length - 1].timestamp_ms;
   const totalMs = endTs - startTs;
   if (totalMs <= 0) return "";
 
@@ -107,7 +121,7 @@ function renderFullSignalImage(
   // Find global min/max for Y scale
   let yMin = Infinity;
   let yMax = -Infinity;
-  for (const pt of data) {
+  for (const pt of cropData) {
     if (pt.value < yMin) yMin = pt.value;
     if (pt.value > yMax) yMax = pt.value;
   }
@@ -214,15 +228,15 @@ function renderFullSignalImage(
   // Downsample if too many points for the canvas width
   const maxPts = plotW * 2;
   let step = 1;
-  if (data.length > maxPts) step = Math.ceil(data.length / maxPts);
+  if (cropData.length > maxPts) step = Math.ceil(cropData.length / maxPts);
 
   ctx.strokeStyle = theme.trace;
   ctx.lineWidth = 1;
   ctx.lineJoin = "round";
   ctx.beginPath();
   let started = false;
-  for (let i = 0; i < data.length; i += step) {
-    const pt = data[i];
+  for (let i = 0; i < cropData.length; i += step) {
+    const pt = cropData[i];
     const x = tsToX(pt.timestamp_ms);
     const y = valueToY(pt.value);
     if (!started) { ctx.moveTo(x, y); started = true; }
