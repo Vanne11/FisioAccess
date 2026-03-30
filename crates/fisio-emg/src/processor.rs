@@ -6,6 +6,7 @@
 //! - Rango esperado: 0.1 a 5 mV
 //! - ADS1115 SingleEnded, ganancia 2/3
 
+use std::time::Instant;
 use fisio_filters::{ButterworthFilter, NotchFilter, FilterTrait};
 use crate::converter::{self, DEFAULT_OFFSET_MV, SAMPLE_RATE_HZ};
 
@@ -44,9 +45,10 @@ pub struct EmgProcessor {
     offset_mv: f64,
     /// Contador de warmup: muestras restantes a descartar
     warmup_remaining: usize,
-    /// Muestras acumuladas para calibración
+    /// Calibración basada en tiempo (no conteo de muestras)
     cal_samples: Vec<f64>,
-    cal_target: usize,
+    cal_duration_secs: f64,
+    cal_start: Option<Instant>,
     calibrating: bool,
     calibrated: bool,
 }
@@ -62,7 +64,8 @@ impl EmgProcessor {
             offset_mv: config.offset_mv,
             warmup_remaining: WARMUP_SAMPLES,
             cal_samples: Vec::new(),
-            cal_target: 0,
+            cal_duration_secs: 0.0,
+            cal_start: None,
             calibrating: false,
             calibrated: false,
         }
@@ -75,8 +78,10 @@ impl EmgProcessor {
         // Si estamos calibrando, acumular mV crudo (incluso durante warmup)
         if self.calibrating {
             self.cal_samples.push(mv);
-            if self.cal_samples.len() >= self.cal_target {
-                self.finish_calibration();
+            if let Some(start) = self.cal_start {
+                if start.elapsed().as_secs_f64() >= self.cal_duration_secs {
+                    self.finish_calibration();
+                }
             }
         }
 
@@ -113,13 +118,13 @@ impl EmgProcessor {
         self.notch.apply(filtered)
     }
 
-    /// Iniciar calibración (acumular muestras para calcular offset)
+    /// Iniciar calibración basada en tiempo real
     /// `duration_secs`: duración en segundos (típicamente 5)
     pub fn start_calibration(&mut self, duration_secs: f64) {
-        let target = (duration_secs * SAMPLE_RATE_HZ) as usize;
         self.cal_samples.clear();
-        self.cal_samples.reserve(target);
-        self.cal_target = target;
+        self.cal_samples.reserve(1000);
+        self.cal_duration_secs = duration_secs;
+        self.cal_start = Some(Instant::now());
         self.calibrating = true;
         self.calibrated = false;
         // Reset filtros, envolvente y warmup
@@ -138,15 +143,20 @@ impl EmgProcessor {
         }
         self.calibrating = false;
         self.calibrated = true;
+        self.cal_start = None;
         self.cal_samples.clear();
     }
 
-    /// Progreso de calibración (0.0 a 1.0)
+    /// Progreso de calibración (0.0 a 1.0) basado en tiempo real
     pub fn calibration_progress(&self) -> f64 {
-        if !self.calibrating || self.cal_target == 0 {
+        if !self.calibrating || self.cal_duration_secs <= 0.0 {
             return if self.calibrated { 1.0 } else { 0.0 };
         }
-        (self.cal_samples.len() as f64 / self.cal_target as f64).min(1.0)
+        if let Some(start) = self.cal_start {
+            (start.elapsed().as_secs_f64() / self.cal_duration_secs).min(1.0)
+        } else {
+            0.0
+        }
     }
 
     pub fn is_calibrating(&self) -> bool {
@@ -196,19 +206,19 @@ mod tests {
 
     #[test]
     fn test_calibration() {
-        let mut config = EmgConfig::default();
-        config.sample_rate = 860.0;
-        let mut proc = EmgProcessor::new(config);
+        let mut proc = EmgProcessor::new(EmgConfig::default());
 
-        proc.start_calibration(1.0);
+        // Calibración de 0.05s (50ms) — suficiente para test
+        proc.start_calibration(0.05);
         assert!(proc.is_calibrating());
 
-        for _ in 0..860 {
+        // Alimentar muestras hasta que el tiempo pase
+        loop {
             proc.process(1768.0);
+            if !proc.is_calibrating() { break; }
         }
 
         assert!(proc.is_calibrated());
-        assert!(!proc.is_calibrating());
         assert!((proc.offset_mv() - 1768.0).abs() < 0.1);
     }
 

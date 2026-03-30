@@ -70,6 +70,7 @@ impl SerialManager {
             let mut reader = std::io::BufReader::with_capacity(64 * 1024, port);
             let mut line = String::new();
             let start = Instant::now();
+            let mut last_progress_emit = Instant::now();
 
             while running.load(Ordering::Relaxed) {
                 line.clear();
@@ -122,16 +123,19 @@ impl SerialManager {
 
                             let value = if let Some(ref proc) = emg_processor {
                                 if let Ok(mut p) = proc.lock() {
-                                    // Emitir progreso de calibración si está calibrando
-                                    if p.is_calibrating() {
-                                        let progress = p.calibration_progress();
-                                        let _ = app.emit("emg-calibration-progress", progress);
-                                    }
+                                    let was_calibrating = p.is_calibrating();
 
                                     let result = p.process(mv);
 
-                                    // Notificar si la calibración acaba de terminar
-                                    if p.is_calibrated() && !p.is_calibrating() {
+                                    // Emitir progreso max 10 veces/segundo (no saturar React)
+                                    if p.is_calibrating() {
+                                        if last_progress_emit.elapsed() >= Duration::from_millis(100) {
+                                            let progress = p.calibration_progress();
+                                            let _ = app.emit("emg-calibration-progress", progress);
+                                            last_progress_emit = Instant::now();
+                                        }
+                                    } else if was_calibrating && p.is_calibrated() {
+                                        // Calibración acaba de terminar (solo una vez)
                                         let status = CalibrationStatus {
                                             calibrating: false,
                                             calibrated: true,
