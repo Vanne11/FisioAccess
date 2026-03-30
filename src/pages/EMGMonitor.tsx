@@ -25,7 +25,7 @@ import {
   type EMGPhaseType,
   type ADCConfig,
 } from "@/components/shared/EMGCanvas";
-import { VUMeter, DEFAULT_THRESHOLDS, type VUThresholds, type CalibrationStep } from "@/components/shared/VUMeter";
+import { VUMeter, DEFAULT_THRESHOLDS, type VUThresholds } from "@/components/shared/VUMeter";
 import { PhaseComparison } from "@/components/shared/PhaseComparison";
 import { ProtocolRunner, type ProtocolEvent } from "@/components/shared/ProtocolRunner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
@@ -42,12 +42,8 @@ interface CalibrationStatus {
 }
 
 const EMG_BAUD_RATE = 115200;
-const EMG_BUFFER_SIZE = 5000;
+const EMG_BUFFER_SIZE = 60000; // ~70s a 860 SPS — cubre protocolo completo + margen
 
-// VU Calibration durations in ms
-const CAL_REPOSO_MS = 5000;
-const CAL_LEVE_MS = 5000;
-const CAL_MVC_MS = 3000;
 
 /** Read current theme colors from CSS variables */
 function getReportThemeColors() {
@@ -287,11 +283,6 @@ export function EMGMonitor() {
 
   // VU Meter state
   const [vuThresholds, setVuThresholds] = useState<VUThresholds>(DEFAULT_THRESHOLDS);
-  const [vuCalStep, setVuCalStep] = useState<CalibrationStep>("idle");
-  const [vuCalProgress, setVuCalProgress] = useState(0);
-  const vuCalSamplesRef = useRef<number[]>([]);
-  const vuCalTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const vuCalThresholdsRef = useRef<Partial<VUThresholds>>({});
 
   // ADC calibration listeners
   useEffect(() => {
@@ -329,7 +320,6 @@ export function EMGMonitor() {
     setIsCalibrated(false);
     setCalibrationProgress(0);
     setOffsetMv(1768.0);
-    stopVuCalibration();
   };
 
   const handlePlayStop = useCallback(() => {
@@ -347,6 +337,7 @@ export function EMGMonitor() {
     setFrozen(false);
     setPhaseMarkers([]);
     setActivePhase(null);
+    setVuThresholds(DEFAULT_THRESHOLDS);
   }, [serial]);
 
   const handleFreeze = useCallback(() => setFrozen((f) => !f), []);
@@ -452,89 +443,118 @@ export function EMGMonitor() {
       if (event.autoStop) {
         serial.stopRecording();
       }
+      // Auto-ajustar umbrales VU a partir de las fases del protocolo
+      setPhaseMarkers(prev => {
+        const computeRms = (type: string) => {
+          const m = prev.find(p => p.type === type && p.endMs !== null);
+          if (!m) return 0;
+          let sumSq = 0, count = 0;
+          for (const pt of serial.data) {
+            if (pt.timestamp_ms < m.startMs) continue;
+            if (pt.timestamp_ms > m.endMs!) break;
+            sumSq += pt.value * pt.value;
+            count++;
+          }
+          return count > 0 ? Math.sqrt(sumSq / count) : 0;
+        };
+        const reposoRms = computeRms("reposo");
+        const mvcRms = computeRms("maxima");
+        if (reposoRms > 0 && mvcRms > 0) {
+          setVuThresholds({
+            reposo: reposoRms * 1.5,
+            leve: (reposoRms + mvcRms) / 4,
+            mvc: mvcRms * 1.1,
+          });
+        }
+        return prev;
+      });
     }
   }, [serial.data]);
 
-  // ADC calibration
-  const startCalibration = async () => {
-    try {
-      setCalibrationProgress(0.01);
-      await invoke("emg_start_calibration", { durationSecs: 5.0 });
-    } catch (e) {
-      console.error("Error calibración:", e);
-      setCalibrationProgress(0);
-    }
-  };
+  // Calibración unificada: Reposo 5s (offset + umbral) → Máxima 3s (umbral MVC) → Listo
+  const [calStep, setCalStep] = useState<"idle" | "reposo" | "mvc" | "done">("idle");
+  const [calStepProgress, setCalStepProgress] = useState(0);
+  const calTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const calSamplesRef = useRef<number[]>([]);
+  const calReposoRmsRef = useRef(0);
 
-  // VU Meter calibration (3-step)
-  const stopVuCalibration = useCallback(() => {
-    if (vuCalTimerRef.current) {
-      clearInterval(vuCalTimerRef.current);
-      vuCalTimerRef.current = null;
-    }
-    setVuCalStep("idle");
-    setVuCalProgress(0);
-    vuCalSamplesRef.current = [];
+  const stopFullCalibration = useCallback(() => {
+    if (calTimerRef.current) { clearInterval(calTimerRef.current); calTimerRef.current = null; }
+    setCalStep("idle");
+    setCalStepProgress(0);
   }, []);
 
-  const startVuCalibration = useCallback(() => {
-    if (!serial.recording) return;
-    vuCalThresholdsRef.current = {};
-    runVuCalStep("reposo");
-  }, [serial.recording]);
-
-  const runVuCalStep = useCallback((step: CalibrationStep) => {
-    if (step === "idle" || step === "done") return;
-    setVuCalStep(step);
-    setVuCalProgress(0);
-    vuCalSamplesRef.current = [];
-
-    const durationMs = step === "mvc" ? CAL_MVC_MS : step === "leve" ? CAL_LEVE_MS : CAL_REPOSO_MS;
+  const runCalStep = useCallback((step: "reposo" | "mvc") => {
+    setCalStep(step);
+    setCalStepProgress(0);
+    calSamplesRef.current = [];
+    const durationMs = step === "reposo" ? 5000 : 3000;
     const startTime = Date.now();
 
-    if (vuCalTimerRef.current) clearInterval(vuCalTimerRef.current);
-    vuCalTimerRef.current = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const progress = Math.min(1, elapsed / durationMs);
-      setVuCalProgress(progress);
+    // Si es reposo, también calibrar offset en el backend
+    if (step === "reposo") {
+      invoke("emg_start_calibration", { durationSecs: 5.0 }).catch(() => {});
+    }
 
-      // Collect RMS samples from recent data
+    if (calTimerRef.current) clearInterval(calTimerRef.current);
+    calTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      setCalStepProgress(Math.min(1, elapsed / durationMs));
+
+      // Recoger RMS de las últimas muestras
       const recent = serial.data.slice(-15);
       if (recent.length > 0) {
-        const rms = Math.sqrt(recent.reduce((s, d) => s + d.value * d.value, 0) / recent.length);
-        vuCalSamplesRef.current.push(rms);
+        const r = Math.sqrt(recent.reduce((s, d) => s + d.value * d.value, 0) / recent.length);
+        calSamplesRef.current.push(r);
       }
 
       if (elapsed >= durationMs) {
-        clearInterval(vuCalTimerRef.current!);
-        vuCalTimerRef.current = null;
-
-        // Compute average RMS for this step
-        const samples = vuCalSamplesRef.current;
-        const avgRms = samples.length > 0 ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
+        clearInterval(calTimerRef.current!);
+        calTimerRef.current = null;
+        const avg = calSamplesRef.current.length > 0
+          ? calSamplesRef.current.reduce((a, b) => a + b, 0) / calSamplesRef.current.length
+          : 0;
 
         if (step === "reposo") {
-          vuCalThresholdsRef.current.reposo = avgRms * 1.5;
-          runVuCalStep("leve");
-        } else if (step === "leve") {
-          vuCalThresholdsRef.current.leve = avgRms * 1.2;
-          runVuCalStep("mvc");
-        } else if (step === "mvc") {
-          const reposo = vuCalThresholdsRef.current.reposo ?? DEFAULT_THRESHOLDS.reposo;
-          const leve = vuCalThresholdsRef.current.leve ?? DEFAULT_THRESHOLDS.leve;
-          const mvc = avgRms * 1.1;
+          calReposoRmsRef.current = avg;
+          runCalStep("mvc");
+        } else {
+          // Fijar umbrales VU
+          const reposo = calReposoRmsRef.current * 1.5;
+          const mvc = Math.max(avg * 1.1, reposo * 2);
           setVuThresholds({
-            reposo: Math.max(5, reposo),
-            leve: Math.max(reposo + 5, leve),
-            mvc: Math.max(leve + 5, mvc),
+            reposo: Math.max(0.005, reposo),
+            leve: (reposo + mvc) / 3,
+            mvc,
           });
-          setVuCalStep("done");
-          setVuCalProgress(1);
-          setTimeout(() => setVuCalStep("idle"), 2000);
+          // Detener grabación y limpiar datos de calibración
+          serial.stopRecording();
+          serial.clearData();
+          setFrozen(false);
+          setPhaseMarkers([]);
+          setCalStep("done");
+          setCalStepProgress(1);
         }
       }
     }, 100);
   }, [serial.data]);
+
+  const startFullCalibration = useCallback(() => {
+    if (!serial.isConnected) return;
+    // Iniciar grabación automáticamente si no está grabando
+    if (!serial.recording) {
+      serial.startRecording();
+      setFrozen(false);
+    }
+    serial.clearData();
+    setIsCalibrated(false);
+    calReposoRmsRef.current = 0;
+    runCalStep("reposo");
+  }, [serial, runCalStep]);
+
+  // Escuchar cuando el backend termina la calibración de offset
+  // (se dispara al final del paso "reposo")
+  // VU thresholds tambien se auto-ajustan al completar el protocolo
 
   // Metrics
   const recent = serial.data.slice(-100);
@@ -546,6 +566,7 @@ export function EMGMonitor() {
     recent.length > 0
       ? Math.max(...recent.map((d) => Math.abs(d.value)))
       : 0;
+
 
   const totalSeconds = serial.data.length >= 2
     ? (serial.data[serial.data.length - 1].timestamp_ms - serial.data[0].timestamp_ms) / 1000
@@ -753,14 +774,21 @@ export function EMGMonitor() {
               </div>
             </CardHeader>
             <CardContent className="flex-1 flex min-h-0">
-              {/* VU Meter */}
-              <div className="flex-shrink-0 mr-2">
+              {/* VU Meter + RMS + fase actual */}
+              <div className="flex-shrink-0 mr-2 flex flex-col items-center">
+                <div className="text-center mb-1">
+                  <div className={`text-[10px] font-bold tracking-wide ${rms < vuThresholds.reposo ? "text-green-400" : rms < vuThresholds.leve ? "text-yellow-400" : "text-red-400"}`}>
+                    {rms < vuThresholds.reposo ? "REPOSO" : rms < vuThresholds.leve ? "LEVE" : "MÁXIMA"}
+                  </div>
+                  <div className={`text-lg font-bold font-mono ${rms < vuThresholds.reposo ? "text-green-400" : rms < vuThresholds.leve ? "text-yellow-400" : "text-red-400"}`}>
+                    {rms.toFixed(3)}
+                  </div>
+                  <div className="text-[8px] text-secondary">mV RMS</div>
+                </div>
                 <VUMeter
                   rmsValue={rms}
                   thresholds={vuThresholds}
-                  calibrationStep={vuCalStep}
-                  calibrationProgress={vuCalProgress}
-                  height={300}
+                  height={250}
                 />
               </div>
               {/* Canvas */}
@@ -893,7 +921,7 @@ export function EMGMonitor() {
             </CardContent>
           </Card>
 
-          {/* Calibration */}
+          {/* Calibración unificada */}
           <Card>
             <CardHeader>Calibración</CardHeader>
             <CardContent>
@@ -904,80 +932,54 @@ export function EMGMonitor() {
                 </div>
                 <div className="flex justify-between text-xs text-secondary">
                   <span>Estado</span>
-                  <span className={`font-medium ${isCalibrated ? "text-green-400" : "text-secondary"}`}>
-                    {isCalibrated ? "Calibrado" : "Por defecto"}
+                  <span className={`font-medium ${calStep === "done" ? "text-green-400" : calStep !== "idle" ? "text-purple-400" : "text-secondary"}`}>
+                    {calStep === "done" ? "Listo" : calStep === "reposo" ? "Reposo..." : calStep === "mvc" ? "Máxima..." : isCalibrated ? "Calibrado" : "Sin calibrar"}
                   </span>
                 </div>
-                {calibrationProgress > 0 && !isCalibrated && (
+
+                {/* Barra de progreso del paso actual */}
+                {calStep !== "idle" && calStep !== "done" && (
                   <div>
                     <div className="h-1.5 bg-surface-700 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-emg-500 rounded-full transition-all duration-100"
-                        style={{ width: `${calibrationProgress * 100}%` }}
+                        className={`h-full rounded-full transition-all duration-100 ${calStep === "reposo" ? "bg-green-500" : "bg-red-500"}`}
+                        style={{ width: `${calStepProgress * 100}%` }}
                       />
                     </div>
-                    <div className="text-[10px] text-secondary mt-0.5 text-center">
-                      {Math.round(calibrationProgress * 100)}%
+                    <div className="text-[10px] text-center mt-0.5">
+                      <span className={calStep === "reposo" ? "text-green-400" : "text-red-400"}>
+                        {calStep === "reposo" ? "Relaje el músculo" : "Contraiga al máximo"} — {Math.round(calStepProgress * 100)}%
+                      </span>
                     </div>
                   </div>
                 )}
+
+                {/* Indicador de pasos */}
+                {calStep !== "idle" && (
+                  <div className="flex gap-1 justify-center">
+                    <div className={`h-1.5 flex-1 rounded-full ${calStep === "reposo" ? "bg-green-500 animate-pulse" : "bg-green-500"}`} />
+                    <div className={`h-1.5 flex-1 rounded-full ${calStep === "mvc" ? "bg-red-500 animate-pulse" : calStep === "done" ? "bg-red-500" : "bg-surface-700"}`} />
+                  </div>
+                )}
+
                 <button
-                  onClick={startCalibration}
-                  disabled={!serial.isConnected || isCalibrated || calibrationProgress > 0}
+                  onClick={calStep === "idle" || calStep === "done" ? startFullCalibration : stopFullCalibration}
+                  disabled={!serial.isConnected}
                   className="w-full px-2 py-1.5 text-xs rounded bg-emg-500/20 text-emg-400 hover:bg-emg-500/30 disabled:opacity-30 transition-colors"
                 >
-                  {calibrationProgress > 0 && !isCalibrated
-                    ? "Calibrando..."
-                    : isCalibrated
-                      ? "Calibrado"
-                      : "Calibrar offset (5s)"}
+                  {calStep === "idle"
+                    ? (isCalibrated ? "Recalibrar (8s)" : "Calibrar (8s)")
+                    : calStep === "done"
+                      ? "Listo — Recalibrar"
+                      : "Cancelar"}
                 </button>
-              </div>
-            </CardContent>
-          </Card>
 
-          {/* VU Meter Calibration */}
-          <Card>
-            <CardHeader>Umbrales VU</CardHeader>
-            <CardContent>
-              <div className="flex flex-col gap-1.5">
-                {([
-                  { key: "reposo" as const, label: "Reposo", color: "#22c55e" },
-                  { key: "leve" as const, label: "Leve", color: "#eab308" },
-                  { key: "mvc" as const, label: "MVC", color: "#ef4444" },
-                ]).map(({ key, label, color }) => (
-                  <div key={key} className="flex items-center justify-between">
-                    <span className="text-[10px]" style={{ color }}>{label}</span>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        value={vuThresholds[key].toFixed(0)}
-                        onChange={(e) => {
-                          const v = parseFloat(e.target.value);
-                          if (!isNaN(v) && v > 0) setVuThresholds(prev => ({ ...prev, [key]: v }));
-                        }}
-                        className="w-14 px-1 py-0.5 text-[10px] font-mono bg-surface-800 border border-surface-600 rounded text-primary text-right"
-                      />
-                      <span className="text-[9px] text-secondary">\u00B5V</span>
-                    </div>
-                  </div>
-                ))}
-                <button
-                  onClick={vuCalStep === "idle" ? startVuCalibration : stopVuCalibration}
-                  disabled={!serial.recording}
-                  className="w-full px-2 py-1.5 text-xs rounded bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 disabled:opacity-30 transition-colors mt-1"
-                >
-                  {vuCalStep === "idle"
-                    ? "Auto-calibrar (13s)"
-                    : vuCalStep === "done"
-                      ? "Calibrado"
-                      : `Calibrando: ${vuCalStep === "reposo" ? "Reposo" : vuCalStep === "leve" ? "Leve" : "MVC"}...`}
-                </button>
-                {vuCalStep !== "idle" && vuCalStep !== "done" && (
-                  <div className="text-[10px] text-center text-secondary">
-                    {vuCalStep === "reposo" && "Relaje el músculo completamente..."}
-                    {vuCalStep === "leve" && "Realice contracción leve..."}
-                    {vuCalStep === "mvc" && "Contracción máxima voluntaria..."}
+                {/* Umbrales resultantes */}
+                {(isCalibrated || calStep === "done") && (
+                  <div className="flex gap-2 text-[9px] font-mono mt-1">
+                    <span className="text-green-400">R:{vuThresholds.reposo.toFixed(3)}</span>
+                    <span className="text-yellow-400">L:{vuThresholds.leve.toFixed(3)}</span>
+                    <span className="text-red-400">M:{vuThresholds.mvc.toFixed(3)}</span>
                   </div>
                 )}
               </div>

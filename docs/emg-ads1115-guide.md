@@ -307,7 +307,78 @@ export const DEFAULT_THRESHOLDS: VUThresholds = {
 
 ---
 
-## 8. Protocolo de prueba EMG
+## 8. Metricas clinicas EMG
+
+### RMS (Root Mean Square — Valor eficaz)
+
+Representa la **potencia promedio** de la contraccion muscular. Es el dato mas usado en EMG clinico para cuantificar fuerza.
+
+```
+RMS = √(suma de valores² / cantidad de muestras)
+```
+
+| Estado del musculo | RMS tipico |
+|---|---|
+| Relajado | ≈ 0 mV |
+| Contraccion leve | sube moderadamente |
+| Contraccion maxima | valor mas alto |
+
+**Uso clinico**: comparar intensidad de contraccion entre fases, entre musculos, o entre sesiones de rehabilitacion.
+
+### P-P (Peak to Peak — Pico a pico)
+
+Es la **diferencia entre el punto mas alto y el mas bajo** de la señal en una fase.
+
+```
+P-P = valor maximo - valor minimo
+```
+
+Un P-P grande indica que el musculo genero una deflexion fuerte. Es util para detectar activaciones bruscas o espasmos.
+
+**Uso clinico**: detectar picos de activacion involuntaria, espasmos, o evaluar la amplitud de respuesta muscular.
+
+### %MVC (Porcentaje de Contraccion Voluntaria Maxima)
+
+Compara cualquier contraccion contra la **fuerza maxima que el paciente puede hacer**. Normaliza los datos para poder comparar entre pacientes.
+
+```
+%MVC = (RMS de la fase / RMS de la fase MVC) × 100
+```
+
+Ejemplo:
+- Fase MVC (maxima fuerza): RMS = 2.0 mV
+- Fase contraccion leve: RMS = 0.4 mV
+- %MVC = (0.4 / 2.0) × 100 = **20%**
+
+Esto significa que la contraccion leve uso el 20% de la capacidad maxima del musculo.
+
+**Uso clinico**: es la metrica mas importante en rehabilitacion porque un 30% MVC significa lo mismo en alguien fuerte que en alguien debil. Permite evaluar progreso entre sesiones.
+
+### Resumen de metricas
+
+| Metrica | Que muestra | Cuando usarla |
+|---|---|---|
+| **RMS** | Intensidad promedio de contraccion | Comparar fuerza entre fases |
+| **P-P** | Amplitud maxima de la señal | Detectar picos, espasmos |
+| **%MVC** | Esfuerzo relativo al maximo del paciente | Rehabilitacion, evaluar progreso |
+
+---
+
+## 9. VU Meter (indicador de nivel)
+
+El VU Meter es la barra vertical de colores que muestra la intensidad de contraccion en tiempo real. Tiene tres zonas basadas en umbrales RMS:
+
+| Zona | Color | Umbral default | Significado |
+|---|---|---|---|
+| Reposo | Verde | < 0.05 mV | Musculo relajado |
+| Leve | Amarillo | 0.05 - 0.5 mV | Contraccion leve |
+| MVC | Rojo | > 0.5 mV | Contraccion fuerte/maxima |
+
+Estos umbrales son defaults. Se ajustan automaticamente si se usa la calibracion VU de 3 pasos (reposo → leve → MVC) que mide los umbrales reales del paciente.
+
+---
+
+## 10. Protocolo de prueba EMG
 
 El `ProtocolRunner` ejecuta una secuencia automatizada:
 
@@ -315,15 +386,11 @@ El `ProtocolRunner` ejecuta una secuencia automatizada:
 2. **Contraccion leve** (5s): fuerza minima sostenida
 3. **Contraccion maxima / MVC** (3s): fuerza maxima voluntaria
 
-Cada fase genera marcadores en el grafico y calcula estadisticas:
-- **RMS**: valor eficaz de la envolvente
-- **P-P**: amplitud pico a pico
-- **%MVC**: porcentaje respecto a la contraccion maxima
-- **Frecuencia mediana**: estimada por cruces por cero
+Cada fase genera marcadores en el grafico y calcula estadisticas (RMS, P-P, %MVC, frecuencia mediana).
 
 ---
 
-## 9. Estructura de archivos
+## 11. Estructura de archivos
 
 ```
 FisioAccess/
@@ -357,7 +424,7 @@ FisioAccess/
 
 ---
 
-## 10. Checklist para replicar
+## 12. Checklist para replicar
 
 - [ ] Montar hardware: ESP32-C3 + ADS1115 via I2C + electrodos
 - [ ] Arduino IDE: Board=ESP32C3, USB CDC On Boot=Enabled
