@@ -7,9 +7,9 @@ export interface VUThresholds {
 }
 
 export const DEFAULT_THRESHOLDS: VUThresholds = {
-  reposo: 20,
-  leve: 80,
-  mvc: 200,
+  reposo: 0.05,
+  leve: 0.5,
+  mvc: 5.0,
 };
 
 export type CalibrationStep = "idle" | "reposo" | "leve" | "mvc" | "done";
@@ -169,25 +169,25 @@ export function VUMeter({ rmsValue, thresholds, calibrationStep = "idle", calibr
     ctx.textBaseline = "middle";
 
     ctx.fillStyle = COLOR_GREEN;
-    ctx.fillText(`${thresholds.reposo.toFixed(0)}`, labX, barBot - greenH);
+    ctx.fillText(`${thresholds.reposo.toFixed(2)}`, labX, barBot - greenH);
     ctx.fillStyle = COLOR_YELLOW;
-    ctx.fillText(`${thresholds.leve.toFixed(0)}`, labX, barBot - greenH - yellowH);
+    ctx.fillText(`${thresholds.leve.toFixed(1)}`, labX, barBot - greenH - yellowH);
     ctx.fillStyle = COLOR_RED;
-    ctx.fillText(`${thresholds.mvc.toFixed(0)}`, labX, barTop + 4);
+    ctx.fillText(`${thresholds.mvc.toFixed(1)}`, labX, barTop + 4);
 
     // Current value at top
     ctx.fillStyle = level < thresholds.reposo ? COLOR_GREEN : level < thresholds.leve ? COLOR_YELLOW : COLOR_RED;
     ctx.font = "bold 9px monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText(`${level.toFixed(0)}`, barX + BAR_W / 2, 2);
+    ctx.fillText(`${level.toFixed(2)}`, barX + BAR_W / 2, 2);
 
     // Unit label at bottom
     ctx.fillStyle = theme.label;
     ctx.font = "7px monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
-    ctx.fillText("µV", barX + BAR_W / 2, totalH - 1);
+    ctx.fillText("mV", barX + BAR_W / 2, totalH - 1);
 
     // Calibration overlay
     if (calibrationStep !== "idle" && calibrationStep !== "done") {

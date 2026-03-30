@@ -37,20 +37,18 @@ export const EMG_PHASE_CONFIG: Record<EMGPhaseType, { label: string; color: stri
   relajacion:  { label: "Relajación",         color: "#4ade80", bg: "rgba(74, 222, 128, 0.12)" },
 };
 
-export const SCALE_PRESETS = [100, 500, 1000, 2000] as const;
+export const SCALE_PRESETS = [0.5, 1, 2, 5] as const;
 
 export interface ADCConfig {
-  gain: number;       // System gain (default 1200)
   vref: number;       // ADC voltage reference in mV/LSB (default 0.1875)
   resolution: number; // ADC bits (default 16)
-  offset: number;     // DC offset in mV (default 666)
+  offset: number;     // DC offset in mV (default 1768)
 }
 
 export const DEFAULT_ADC_CONFIG: ADCConfig = {
-  gain: 1200,
-  vref: 0.1875,
+  vref: 0.125,
   resolution: 16,
-  offset: 666,
+  offset: 1768,
 };
 
 interface EMGCanvasProps {
@@ -63,11 +61,11 @@ interface EMGCanvasProps {
   onMarkerUpdate?: (id: string, startMs: number, endMs: number) => void;
   /** Drag = mover (X+Y), R = girar +15°, Shift+R = girar -15° */
   onMarkerLabelTransform?: (id: string, labelX: number, labelY: number, labelAngle: number) => void;
-  scalePreset?: number | null; // ±N µV, null = auto
+  scalePreset?: number | null; // ±N mV, null = auto
   showRmsEnvelope?: boolean;
   showCalBar?: boolean;
   className?: string;
-  /** Called on each frame with the current auto-scale range (±µV) */
+  /** Called on each frame with the current auto-scale range (±mV) */
   onAutoScaleChange?: (range: number) => void;
 }
 
@@ -189,7 +187,7 @@ export function EMGCanvas({
   const didDragRef = useRef(false);
 
   // Smoothed auto-scale state
-  const autoScaleRef = useRef<number>(100); // current smoothed ±µV range
+  const autoScaleRef = useRef<number>(1); // current smoothed ±mV range
   const autoScaleLastReport = useRef<number>(0);
 
   // Draggable marker edge state
@@ -308,7 +306,7 @@ export function EMGCanvas({
         next = prev;
       }
       // Enforce minimum
-      if (next < 5) next = 5;
+      if (next < 0.05) next = 0.05;
       autoScaleRef.current = next;
 
       yMin = -next;
@@ -434,7 +432,7 @@ export function EMGCanvas({
     ctx.font = "9px monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText("µV", 2, 4);
+    ctx.fillText("mV", 2, 4);
 
     // 1s reference bar
     const bar1sW = pxPerMs * 1000;
@@ -721,7 +719,7 @@ export function EMGCanvas({
           ctx.textAlign = "right";
           ctx.textBaseline = "middle";
           const midY = (yTop + yBot) / 2;
-          ctx.fillText(`${amplitude.toFixed(1)}µV`, arrowX - 5, midY);
+          ctx.fillText(`${amplitude.toFixed(2)}mV`, arrowX - 5, midY);
           // P-P label
           ctx.font = "7px monospace";
           ctx.globalAlpha = 0.6;
@@ -767,10 +765,10 @@ export function EMGCanvas({
         const durStr = durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs.toFixed(0)}ms`;
         ctx.font = "8px monospace";
         ctx.globalAlpha = 0.8;
-        ctx.fillText(`${durStr} | RMS:${rmsVal.toFixed(1)}µV`, 0, -lH / 2 + 13);
+        ctx.fillText(`${durStr} | RMS:${rmsVal.toFixed(2)}mV`, 0, -lH / 2 + 13);
         // Stats line 2: P-P
         if (amplitude > 0) {
-          ctx.fillText(`P-P:${amplitude.toFixed(1)}µV`, 0, -lH / 2 + 22);
+          ctx.fillText(`P-P:${amplitude.toFixed(2)}mV`, 0, -lH / 2 + 22);
         }
         ctx.globalAlpha = 1;
 

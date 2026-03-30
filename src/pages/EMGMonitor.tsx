@@ -41,7 +41,7 @@ interface CalibrationStatus {
   offset_mv: number;
 }
 
-const EMG_BAUD_RATE = 9600;
+const EMG_BAUD_RATE = 115200;
 const EMG_BUFFER_SIZE = 5000;
 
 // VU Calibration durations in ms
@@ -264,7 +264,7 @@ export function EMGMonitor() {
   const serial = useSerial(EMG_BAUD_RATE, EMG_BUFFER_SIZE, "emg");
   const [isCalibrated, setIsCalibrated] = useState(false);
   const [calibrationProgress, setCalibrationProgress] = useState(0);
-  const [offsetMv, setOffsetMv] = useState(666.0);
+  const [offsetMv, setOffsetMv] = useState(1768.0);
   const [frozen, setFrozen] = useState(false);
   const [phaseMarkers, setPhaseMarkers] = useState<EMGPhaseMarker[]>([]);
   const [activePhase, setActivePhase] = useState<EMGPhaseType | null>(null);
@@ -328,7 +328,7 @@ export function EMGMonitor() {
     await serial.disconnect();
     setIsCalibrated(false);
     setCalibrationProgress(0);
-    setOffsetMv(666.0);
+    setOffsetMv(1768.0);
     stopVuCalibration();
   };
 
@@ -610,19 +610,18 @@ export function EMGMonitor() {
     title: "Electromiograma",
     accent: "#f59e0b",
     fields: [
-      { label: "RMS global", value: globalMetrics.rms > 0 ? globalMetrics.rms.toFixed(1) : "\u2014", unit: "\u00B5V" },
-      { label: "Amplitud pico global", value: globalMetrics.peak > 0 ? globalMetrics.peak.toFixed(1) : "\u2014", unit: "\u00B5V" },
+      { label: "RMS global", value: globalMetrics.rms > 0 ? globalMetrics.rms.toFixed(3) : "\u2014", unit: "mV" },
+      { label: "Amplitud pico global", value: globalMetrics.peak > 0 ? globalMetrics.peak.toFixed(3) : "\u2014", unit: "mV" },
       { label: "Duración total", value: totalSeconds > 0 ? `${totalMin}:${totalSec.toString().padStart(2, "0")}` : "\u2014", unit: "min:seg" },
       { label: "Muestras", value: serial.data.length.toString() },
       { label: "Fases registradas", value: phaseMarkers.filter(m => m.endMs != null).length.toString() },
       { label: "Offset", value: offsetMv.toFixed(1), unit: "mV" },
-      { label: "Ganancia", value: adcConfig.gain.toString() },
-      { label: "Calibración", value: isCalibrated ? "Calibrado" : "Por defecto (666 mV)" },
+      { label: "Calibración", value: isCalibrated ? "Calibrado" : "Por defecto (1768 mV)" },
     ],
     signalImage,
-    signalLabel: "Registro EMG completo (\u00B5V) — Señal con fases marcadas",
+    signalLabel: "Registro EMG completo (mV) — Señal con fases marcadas",
     phases: phaseReportEntries.length > 0 ? phaseReportEntries : undefined,
-  }), [globalMetrics, serial.data.length, isCalibrated, offsetMv, signalImage, totalSeconds, totalMin, totalSec, adcConfig.gain, phaseMarkers, phaseReportEntries]);
+  }), [globalMetrics, serial.data.length, isCalibrated, offsetMv, signalImage, totalSeconds, totalMin, totalSec, phaseMarkers, phaseReportEntries]);
 
   // Marker stats for sidebar
   const markerStats = useMemo(() => {
@@ -826,11 +825,11 @@ export function EMGMonitor() {
               </div>
               <div className="flex justify-between text-xs text-secondary mb-1">
                 <span>RMS</span>
-                <span className="font-mono text-emg-400">{rms > 0 ? `${rms.toFixed(1)} \u00B5V` : "--"}</span>
+                <span className="font-mono text-emg-400">{rms > 0 ? `${rms.toFixed(3)} mV` : "--"}</span>
               </div>
               <div className="flex justify-between text-xs text-secondary mb-1">
                 <span>Pico</span>
-                <span className="font-mono text-emg-400">{peak > 0 ? `${peak.toFixed(1)} \u00B5V` : "--"}</span>
+                <span className="font-mono text-emg-400">{peak > 0 ? `${peak.toFixed(3)} mV` : "--"}</span>
               </div>
               <div className="flex justify-between text-xs text-secondary mb-1">
                 <span>Muestras</span>
@@ -869,10 +868,9 @@ export function EMGMonitor() {
             <CardContent>
               <div className="flex flex-col gap-1.5">
                 <div className="text-[9px] text-secondary mb-1 font-mono">
-                  µV = ((raw - offset) × Vref / 2^bits) / G × 10⁶
+                  mV = (raw - offset) × 0.1875
                 </div>
                 {([
-                  { key: "gain" as const, label: "Ganancia", unit: "" },
                   { key: "vref" as const, label: "Vref", unit: "mV/LSB" },
                   { key: "resolution" as const, label: "Resolución", unit: "bits" },
                   { key: "offset" as const, label: "Offset", unit: "mV" },

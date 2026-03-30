@@ -320,10 +320,10 @@ function ReportPage({
                 <tr style={{ borderBottom: "2px solid #e5e7eb" }}>
                   <th style={{ textAlign: "left", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Fase</th>
                   <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Duración</th>
-                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>RMS (uV)</th>
-                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>P-P (uV)</th>
-                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Pico+ (uV)</th>
-                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Pico- (uV)</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>RMS (mV)</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>P-P (mV)</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Pico+ (mV)</th>
+                  <th style={{ textAlign: "right", padding: "8px 6px", fontSize: "11px", fontWeight: 600, color: "#6b7280" }}>Pico- (mV)</th>
                 </tr>
               </thead>
               <tbody>

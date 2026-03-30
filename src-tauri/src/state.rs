@@ -65,7 +65,9 @@ impl SerialManager {
 
         // Spawn reader thread
         std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(port);
+            // Buffer de 64KB: a 860 SPS con ~30 bytes/línea, caben ~2100 líneas (~2.5s)
+            // Evita pérdida de paquetes si el procesamiento se retrasa momentáneamente
+            let mut reader = std::io::BufReader::with_capacity(64 * 1024, port);
             let mut line = String::new();
             let start = Instant::now();
 
@@ -76,6 +78,11 @@ impl SerialManager {
                     Ok(_) => {
                         let trimmed = line.trim();
 
+                        // Ignorar líneas vacías
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+
                         // Capturar lineas "BPM: xx" del firmware
                         if let Some(bpm_str) = trimmed.strip_prefix("BPM:") {
                             if let Ok(bpm) = bpm_str.trim().parse::<f64>() {
@@ -84,19 +91,35 @@ impl SerialManager {
                             continue;
                         }
 
-                        let raw_value = trimmed
-                            .parse::<f64>()
-                            .or_else(|_| {
-                                trimmed
-                                    .split([',', '\t', ';'])
-                                    .last()
-                                    .unwrap_or("")
-                                    .trim()
-                                    .parse::<f64>()
-                            })
-                            .ok();
+                        // Ignorar headers y líneas no numéricas del firmware
+                        // (ej: "ADS1115 EMG Ready", "timestamp_ms,adc_raw,mv")
+                        let first_char = trimmed.as_bytes().first().copied().unwrap_or(0);
+                        if !first_char.is_ascii_digit() && first_char != b'-' {
+                            log::debug!("Serial skip header: {trimmed}");
+                            continue;
+                        }
 
-                        if let Some(raw) = raw_value {
+                        // Detectar formato:
+                        // - Solo un número: "14143" → raw ADC counts, convertir a mV
+                        // - CSV con comas: "ts,raw,mv" → tomar último campo (ya es mV)
+                        let mv_value = if trimmed.contains(',') {
+                            // CSV: último campo es mV (firmware envía computeVolts)
+                            trimmed
+                                .split(',')
+                                .last()
+                                .unwrap_or("")
+                                .trim()
+                                .parse::<f64>()
+                                .ok()
+                        } else {
+                            // Valor único: raw ADC counts → convertir a mV
+                            trimmed.parse::<f64>().ok().map(|raw| {
+                                raw * fisio_emg::converter::ADS_RESOLUTION_MV
+                            })
+                        };
+
+                        if let Some(mv) = mv_value {
+
                             let value = if let Some(ref proc) = emg_processor {
                                 if let Ok(mut p) = proc.lock() {
                                     // Emitir progreso de calibración si está calibrando
@@ -105,7 +128,7 @@ impl SerialManager {
                                         let _ = app.emit("emg-calibration-progress", progress);
                                     }
 
-                                    let result = p.process(raw);
+                                    let result = p.process(mv);
 
                                     // Notificar si la calibración acaba de terminar
                                     if p.is_calibrated() && !p.is_calibrating() {
@@ -120,10 +143,10 @@ impl SerialManager {
 
                                     result
                                 } else {
-                                    raw
+                                    mv
                                 }
                             } else {
-                                raw
+                                mv
                             };
 
                             let point = SerialDataPoint {

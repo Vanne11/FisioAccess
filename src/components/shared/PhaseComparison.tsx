@@ -279,11 +279,11 @@ export function PhaseComparison({ data, markers, className }: PhaseComparisonPro
                 <div className="text-[10px] font-mono bg-surface-900 rounded p-1.5 space-y-0.5" style={{ borderLeft: `3px solid ${cfg.color}` }}>
                   <div className="flex justify-between">
                     <span className="text-secondary">RMS</span>
-                    <span style={{ color: cfg.color }}>{s.rms.toFixed(1)} µV</span>
+                    <span style={{ color: cfg.color }}>{s.rms.toFixed(3)} mV</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-secondary">P-P</span>
-                    <span style={{ color: cfg.color }}>{s.peakToPeak.toFixed(1)} µV</span>
+                    <span style={{ color: cfg.color }}>{s.peakToPeak.toFixed(3)} mV</span>
                   </div>
                   {mvcRms > 0 && (
                     <div className="flex justify-between">
