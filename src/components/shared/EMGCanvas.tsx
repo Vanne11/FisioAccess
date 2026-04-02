@@ -76,8 +76,6 @@ const MARGIN_LEFT = 52;
 const MARGIN_BOTTOM = 24;
 const SCROLLBAR_H = 14;
 const CAL_BAR_W = 8;
-const RMS_WINDOW_MS = 150;
-
 const COLOR_GRID_SMALL = "rgba(245, 158, 11, 0.10)";
 const COLOR_GRID_LARGE = "rgba(245, 158, 11, 0.22)";
 const COLOR_TRACE = "rgba(245, 158, 11, 1)";
@@ -122,40 +120,6 @@ function fmtTime(sec: number): string {
   if (sec >= 10) return `${sec.toFixed(0)}s`;
   if (sec >= 1) return `${sec.toFixed(1)}s`;
   return `${(sec * 1000).toFixed(0)}ms`;
-}
-
-/** Compute rolling RMS for visible data points */
-function computeRmsEnvelope(
-  data: EMGDataPoint[],
-  startIdx: number,
-  startTs: number,
-  endTs: number,
-): { timestamp_ms: number; rms: number }[] {
-  const result: { timestamp_ms: number; rms: number }[] = [];
-  const halfWindow = RMS_WINDOW_MS / 2;
-
-  for (let i = startIdx; i < data.length; i++) {
-    const pt = data[i];
-    if (pt.timestamp_ms > endTs) break;
-    if (pt.timestamp_ms < startTs) continue;
-
-    let sumSq = 0;
-    let count = 0;
-    // Look back and forward for window
-    for (let j = i; j >= 0 && data[j].timestamp_ms >= pt.timestamp_ms - halfWindow; j--) {
-      sumSq += data[j].filtered * data[j].filtered;
-      count++;
-    }
-    for (let j = i + 1; j < data.length && data[j].timestamp_ms <= pt.timestamp_ms + halfWindow; j++) {
-      sumSq += data[j].filtered * data[j].filtered;
-      count++;
-    }
-
-    if (count > 0) {
-      result.push({ timestamp_ms: pt.timestamp_ms, rms: Math.sqrt(sumSq / count) });
-    }
-  }
-  return result;
 }
 
 const EDGE_GRAB_PX = 6;
@@ -572,8 +536,8 @@ export function EMGCanvas({
     }
     ctx.stroke();
 
-    // --- Backend envelope (smooth contraction amplitude) ---
-    {
+    // --- Envelope (toggled by RMS button) ---
+    if (showRmsEnvelope) {
       ctx.strokeStyle = COLOR_RMS_ENVELOPE;
       ctx.lineWidth = 2.5;
       ctx.setLineDash([]);
@@ -605,26 +569,6 @@ export function EMGCanvas({
       }
       ctx.stroke();
       ctx.globalAlpha = 1;
-    }
-
-    // --- RMS Envelope (optional, computed from filtered signal) ---
-    if (showRmsEnvelope) {
-      const rmsEnv = computeRmsEnvelope(data, startIdx, startTs, endTs);
-      if (rmsEnv.length > 1) {
-        ctx.strokeStyle = "rgba(56, 189, 248, 0.5)";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        let envStarted = false;
-        for (const ep of rmsEnv) {
-          const x = tsToX(ep.timestamp_ms);
-          const y = valueToY(ep.rms);
-          if (!envStarted) { ctx.moveTo(x, y); envStarted = true; }
-          else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
     }
 
     // --- Phase markers PASS 2: annotations ON TOP of trace ---
