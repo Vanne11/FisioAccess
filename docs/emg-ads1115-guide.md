@@ -121,14 +121,26 @@ ADS1115 (860 SPS, GAIN_ONE)
       ▼ Notch 50Hz Q=30
  Sin interferencia de red
       │
+      ▼ Butterworth LP 450Hz
+ Sin ruido de alta frecuencia fuera de banda EMG
+      │
       ▼ Warmup: 20 muestras alimentan filtros, retornan 0.0
       │
-      ▼ abs()
- Rectificacion onda completa
-      │
-      ▼ EMA (α = 0.1)
- Envolvente suavizada (mV)
+      ├──────────────────────────┐
+      │                          │
+      ▼ filtered (mV)           ▼ abs()
+ Forma de onda           Rectificacion onda completa
+ (señal bipolar)               │
+      │                         ▼ EMA (α = 0.01)
+      │                    Envolvente suavizada (mV)
+      │                          │
+      ▼                          ▼
+ Frontend recibe ambos: { filtered, envelope }
 ```
+
+El procesador retorna un `EmgSample` con dos campos:
+- **`filtered`**: señal filtrada sin rectificar (forma de onda bipolar, oscila +/-)
+- **`envelope`**: envolvente suavizada (siempre >= 0, representa amplitud de contraccion)
 
 ### 3.1 Constantes
 
@@ -166,8 +178,9 @@ El offset se determina por calibracion (promedio de N segundos en reposo). Sin c
 |---|---|---|---|
 | Highpass | Butterworth 2do orden | 20 Hz | Eliminar artefactos de movimiento y drift DC |
 | Notch | Biquad | 50 Hz, Q=30 | Rechazar interferencia de red electrica |
+| Lowpass | Butterworth 2do orden | 450 Hz | Eliminar ruido HF fuera de la banda EMG util (20-450 Hz) |
 
-> No se usa lowpass adicional porque la envolvente EMA ya actua como filtro paso bajo.
+El lowpass a 450 Hz es critico para reducir ruido visible en el grafico. Sin el, el ruido de alta frecuencia cercano a Nyquist (430 Hz) pasa completo y domina la visualizacion, haciendo que las contracciones no se distingan.
 
 ### 3.4 Rectificacion
 
@@ -185,9 +198,10 @@ La señal EMG es bipolar (oscila alrededor de 0). La rectificacion de onda compl
 self.envelope = (alpha * rectified) + ((1.0 - alpha) * self.envelope);
 ```
 
-- **alpha = 0.1**: respuesta rapida, sigue contracciones individuales
-- **alpha = 0.01**: respuesta lenta, solo muestra tendencia general
-- **Recomendado**: 0.1 para monitorizacion clinica en tiempo real
+- **alpha = 0.01** (actual): constante de ~100 muestras (~116 ms a 860 SPS), cutoff ~1.4 Hz. Suaviza el ruido y muestra las contracciones como "bultos" claros sobre una linea base limpia.
+- **alpha = 0.1**: demasiado rapido a 860 SPS (~12 ms). La envolvente sigue el ruido sample-a-sample y las contracciones no se distinguen del ruido de fondo.
+
+La eleccion de alpha=0.01 es el resultado de calibrar para que contracciones de 0.5-5 segundos se visualicen como picos claros sin que el ruido de fondo domine.
 
 ### 3.6 Warmup (estabilizacion de filtros)
 
@@ -237,11 +251,17 @@ USB Serial (115200 baud)
         - Sin comas → raw counts × 0.125 = mV
       │
       ▼ EmgProcessor::process(mv)
- envelope_mv: f64
+ EmgSample { filtered, envelope }
       │
       ▼ app.emit("serial-data", point)
- Frontend recibe { timestamp_ms, value }
+ Frontend recibe { timestamp_ms, filtered, envelope }
 ```
+
+El evento `serial-data` incluye ambos campos:
+- `filtered`: forma de onda filtrada (bipolar, puede ser negativa)
+- `envelope`: envolvente suavizada (siempre >= 0)
+
+Para modulos que no usan el pipeline EMG (ECG, Spiro), `filtered` contiene el valor mV crudo y `envelope` su valor absoluto.
 
 ### Conexion desde frontend
 
@@ -265,10 +285,20 @@ La salida del procesador es **milivoltios (mV)**. Todos los componentes trabajan
 
 | Componente | Archivo | Funcion |
 |---|---|---|
-| EMGCanvas | `src/components/shared/EMGCanvas.tsx` | Grafico en tiempo real con scroll |
+| EMGCanvas | `src/components/shared/EMGCanvas.tsx` | Grafico en tiempo real con doble traza |
 | VUMeter | `src/components/shared/VUMeter.tsx` | Barra vertical de nivel RMS |
 | PhaseComparison | `src/components/shared/PhaseComparison.tsx` | Comparacion entre fases |
 | ReportPreview | `src/components/shared/ReportPreview.tsx` | Reporte exportable |
+
+### Visualizacion de doble traza
+
+El grafico EMG muestra dos señales superpuestas:
+
+1. **Forma de onda filtrada** (`filtered`): traza principal en color ambar. Muestra las oscilaciones bipolares (+/-) de la actividad muscular. Permite ver la morfologia de la señal EMG.
+
+2. **Envolvente** (`envelope`): traza superpuesta en purpura (gruesa). Muestra la amplitud suavizada de la contraccion. Sube cuando hay contraccion y baja en reposo. Se dibuja tambien espejada en negativo con opacidad reducida para dar contexto visual simetrico.
+
+La traza RMS (opcional, activable) se dibuja en azul claro punteado como referencia adicional.
 
 ### Escalas de visualizacion
 
@@ -399,7 +429,7 @@ FisioAccess/
 │   └── codigo_robusto.ino       # Firmware ECG (ADC interno)
 ├── crates/fisio-emg/src/
 │   ├── converter.rs             # Constantes ADS1115 y conversion a mV
-│   ├── processor.rs             # Pipeline: centrar → HP → notch → rect → EMA
+│   ├── processor.rs             # Pipeline: centrar → HP → notch → LP → rect → EMA (retorna EmgSample)
 │   ├── calibration.rs           # Motor de calibracion
 │   ├── handler.rs               # Handler de dispositivo
 │   └── lib.rs                   # Exports del crate
@@ -409,13 +439,13 @@ FisioAccess/
 │   ├── moving_avg.rs            # Media movil
 │   └── traits.rs                # FilterTrait
 ├── src-tauri/src/
-│   ├── state.rs                 # SerialManager + EmgProcessor
+│   ├── state.rs                 # SerialManager + EmgProcessor (emite filtered + envelope)
 │   ├── commands.rs              # Comandos Tauri IPC
 │   └── lib.rs                   # Setup de la app
 ├── src/
 │   ├── pages/EMGMonitor.tsx     # Pagina principal EMG
 │   └── components/shared/
-│       ├── EMGCanvas.tsx         # Visualizacion de señal
+│       ├── EMGCanvas.tsx         # Visualizacion de señal (doble traza: filtered + envelope)
 │       ├── VUMeter.tsx           # Indicador de nivel
 │       ├── PhaseComparison.tsx   # Comparacion de fases
 │       ├── ProtocolRunner.tsx    # Ejecucion de protocolos

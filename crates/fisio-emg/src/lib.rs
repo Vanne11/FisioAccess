@@ -9,4 +9,4 @@ pub mod processor;
 
 pub use handler::EmgHandler;
 pub use calibration::CalibrationEngine;
-pub use processor::{EmgProcessor, EmgConfig};
+pub use processor::{EmgProcessor, EmgConfig, EmgSample};

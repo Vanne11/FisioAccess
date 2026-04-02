@@ -14,6 +14,11 @@ interface ConnectionStatus {
 
 export interface DataPoint {
   timestamp_ms: number;
+  /** Señal filtrada (forma de onda, puede ser negativa) — usado por EMG */
+  filtered: number;
+  /** Envolvente suavizada (>= 0, amplitud de contracción) — usado por EMG */
+  envelope: number;
+  /** Alias: señal principal para módulos que no usan dual (ECG, Spiro) */
   value: number;
 }
 
@@ -63,9 +68,15 @@ export function useSerial(defaultBaudRate = 115200, bufferSize = 500, mode?: str
   }, []);
 
   const startListening = useCallback(async () => {
-    const u1 = await listen<DataPoint>("serial-data", (event) => {
+    const u1 = await listen<{ timestamp_ms: number; filtered: number; envelope: number }>("serial-data", (event) => {
       if (!recordingRef.current) return;
-      pendingRef.current.push(event.payload);
+      const p = event.payload;
+      pendingRef.current.push({
+        timestamp_ms: p.timestamp_ms,
+        filtered: p.filtered,
+        envelope: p.envelope,
+        value: p.filtered,  // alias para ECG/Spiro compatibilidad
+      });
     });
 
     const u2 = await listen<string>("serial-error", (event) => {

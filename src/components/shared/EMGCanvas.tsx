@@ -2,7 +2,10 @@ import { useRef, useEffect, useCallback, useState } from "react";
 
 export interface EMGDataPoint {
   timestamp_ms: number;
-  value: number;
+  /** Señal filtrada (forma de onda) */
+  filtered: number;
+  /** Envolvente suavizada (amplitud de contracción) */
+  envelope: number;
 }
 
 export type EMGPhaseType = "reposo" | "leve" | "maxima" | "relajacion";
@@ -140,11 +143,11 @@ function computeRmsEnvelope(
     let count = 0;
     // Look back and forward for window
     for (let j = i; j >= 0 && data[j].timestamp_ms >= pt.timestamp_ms - halfWindow; j--) {
-      sumSq += data[j].value * data[j].value;
+      sumSq += data[j].filtered * data[j].filtered;
       count++;
     }
     for (let j = i + 1; j < data.length && data[j].timestamp_ms <= pt.timestamp_ms + halfWindow; j++) {
-      sumSq += data[j].value * data[j].value;
+      sumSq += data[j].filtered * data[j].filtered;
       count++;
     }
 
@@ -278,8 +281,8 @@ export function EMGCanvas({
           const pt = data[i];
           if (pt.timestamp_ms > endTs) break;
           if (pt.timestamp_ms < startTs) continue;
-          if (pt.value < visMin) visMin = pt.value;
-          if (pt.value > visMax) visMax = pt.value;
+          if (pt.filtered < visMin) visMin = pt.filtered;
+          if (pt.filtered > visMax) visMax = pt.filtered;
         }
       }
       if (!isFinite(visMin) || !isFinite(visMax) || visMin === visMax) {
@@ -488,8 +491,8 @@ export function EMGCanvas({
         const pt = data[i];
         if (pt.timestamp_ms > endTs) break;
         if (pt.timestamp_ms < startTs) continue;
-        if (pt.value < visMin) visMin = pt.value;
-        if (pt.value > visMax) visMax = pt.value;
+        if (pt.filtered < visMin) visMin = pt.filtered;
+        if (pt.filtered > visMax) visMax = pt.filtered;
       }
       if (isFinite(visMin) && isFinite(visMax)) {
         const pp = visMax - visMin;
@@ -535,7 +538,7 @@ export function EMGCanvas({
     ctx.rect(MARGIN_LEFT, 0, plotW, plotH);
     ctx.clip();
 
-    // Glow
+    // Glow (filtered waveform)
     ctx.strokeStyle = COLOR_GLOW;
     ctx.lineWidth = 5;
     ctx.lineJoin = "round";
@@ -547,13 +550,13 @@ export function EMGCanvas({
       if (pt.timestamp_ms > endTs) break;
       if (pt.timestamp_ms < startTs) continue;
       const x = tsToX(pt.timestamp_ms);
-      const y = valueToY(pt.value);
+      const y = valueToY(pt.filtered);
       if (!started) { ctx.moveTo(x, y); started = true; }
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
 
-    // Main trace
+    // Main trace (filtered waveform)
     ctx.strokeStyle = COLOR_TRACE;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -563,41 +566,64 @@ export function EMGCanvas({
       if (pt.timestamp_ms > endTs) break;
       if (pt.timestamp_ms < startTs) continue;
       const x = tsToX(pt.timestamp_ms);
-      const y = valueToY(pt.value);
+      const y = valueToY(pt.filtered);
       if (!started) { ctx.moveTo(x, y); started = true; }
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
 
-    // --- RMS Envelope ---
+    // --- Backend envelope (smooth contraction amplitude) ---
+    {
+      ctx.strokeStyle = COLOR_RMS_ENVELOPE;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      let envStarted = false;
+      for (let i = startIdx; i < data.length; i++) {
+        const pt = data[i];
+        if (pt.timestamp_ms > endTs) break;
+        if (pt.timestamp_ms < startTs) continue;
+        const x = tsToX(pt.timestamp_ms);
+        const y = valueToY(pt.envelope);
+        if (!envStarted) { ctx.moveTo(x, y); envStarted = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Mirrored negative envelope
+      ctx.globalAlpha = 0.4;
+      ctx.beginPath();
+      envStarted = false;
+      for (let i = startIdx; i < data.length; i++) {
+        const pt = data[i];
+        if (pt.timestamp_ms > endTs) break;
+        if (pt.timestamp_ms < startTs) continue;
+        const x = tsToX(pt.timestamp_ms);
+        const y = valueToY(-pt.envelope);
+        if (!envStarted) { ctx.moveTo(x, y); envStarted = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // --- RMS Envelope (optional, computed from filtered signal) ---
     if (showRmsEnvelope) {
-      const envelope = computeRmsEnvelope(data, startIdx, startTs, endTs);
-      if (envelope.length > 1) {
-        ctx.strokeStyle = COLOR_RMS_ENVELOPE;
-        ctx.lineWidth = 2;
-        ctx.setLineDash([]);
+      const rmsEnv = computeRmsEnvelope(data, startIdx, startTs, endTs);
+      if (rmsEnv.length > 1) {
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.5)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
         ctx.beginPath();
         let envStarted = false;
-        for (const ep of envelope) {
+        for (const ep of rmsEnv) {
           const x = tsToX(ep.timestamp_ms);
           const y = valueToY(ep.rms);
           if (!envStarted) { ctx.moveTo(x, y); envStarted = true; }
           else ctx.lineTo(x, y);
         }
         ctx.stroke();
-
-        // Also draw mirrored negative
-        ctx.globalAlpha = 0.4;
-        ctx.beginPath();
-        envStarted = false;
-        for (const ep of envelope) {
-          const x = tsToX(ep.timestamp_ms);
-          const y = valueToY(-ep.rms);
-          if (!envStarted) { ctx.moveTo(x, y); envStarted = true; }
-          else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-        ctx.globalAlpha = 1;
+        ctx.setLineDash([]);
       }
     }
 
@@ -623,9 +649,9 @@ export function EMGCanvas({
         const pt = data[i];
         if (pt.timestamp_ms < mStart) continue;
         if (pt.timestamp_ms > mEnd) break;
-        if (pt.value < phaseMin) phaseMin = pt.value;
-        if (pt.value > phaseMax) phaseMax = pt.value;
-        sumSq += pt.value * pt.value;
+        if (pt.filtered < phaseMin) phaseMin = pt.filtered;
+        if (pt.filtered > phaseMax) phaseMax = pt.filtered;
+        sumSq += pt.filtered * pt.filtered;
         count++;
       }
       const rmsVal = count > 0 ? Math.sqrt(sumSq / count) : 0;

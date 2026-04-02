@@ -32,9 +32,9 @@ function computePhaseStats(data: EMGDataPoint[], m: EMGPhaseMarker): EMGPhaseSta
   for (const pt of data) {
     if (pt.timestamp_ms < m.startMs) continue;
     if (pt.timestamp_ms > mEnd) break;
-    if (pt.value < mn) mn = pt.value;
-    if (pt.value > mx) mx = pt.value;
-    sumSq += pt.value * pt.value;
+    if (pt.filtered < mn) mn = pt.filtered;
+    if (pt.filtered > mx) mx = pt.filtered;
+    sumSq += pt.filtered * pt.filtered;
     count++;
   }
   const rms = count > 0 ? Math.sqrt(sumSq / count) : 0;
@@ -59,8 +59,8 @@ function estimateMedianFreq(data: EMGDataPoint[], startMs: number, endMs: number
   for (const pt of data) {
     if (pt.timestamp_ms < startMs) continue;
     if (pt.timestamp_ms > endMs) break;
-    if (count > 0 && prev * pt.value < 0) crossings++;
-    prev = pt.value;
+    if (count > 0 && prev * pt.filtered < 0) crossings++;
+    prev = pt.filtered;
     count++;
   }
   const durationSec = (endMs - startMs) / 1000;
@@ -162,7 +162,7 @@ function MiniChart({
       if (pt.timestamp_ms < marker.startMs) continue;
       if (pt.timestamp_ms > mEnd) break;
       const x = tsToX(pt.timestamp_ms);
-      const y = valueToY(pt.value);
+      const y = valueToY(pt.filtered);
       if (!started) { ctx.moveTo(x, y); started = true; }
       else ctx.lineTo(x, y);
     }
@@ -231,8 +231,8 @@ export function PhaseComparison({ data, markers, className }: PhaseComparisonPro
       for (const pt of data) {
         if (pt.timestamp_ms < m.startMs) continue;
         if (pt.timestamp_ms > mEnd) break;
-        if (pt.value < mn) mn = pt.value;
-        if (pt.value > mx) mx = pt.value;
+        if (pt.filtered < mn) mn = pt.filtered;
+        if (pt.filtered > mx) mx = pt.filtered;
       }
     }
     if (!isFinite(mn) || !isFinite(mx)) { mn = -10; mx = 10; }

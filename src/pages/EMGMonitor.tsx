@@ -122,8 +122,8 @@ function renderFullSignalImage(
   let yMin = Infinity;
   let yMax = -Infinity;
   for (const pt of cropData) {
-    if (pt.value < yMin) yMin = pt.value;
-    if (pt.value > yMax) yMax = pt.value;
+    if (pt.filtered < yMin) yMin = pt.filtered;
+    if (pt.filtered > yMax) yMax = pt.filtered;
   }
   if (!isFinite(yMin) || !isFinite(yMax) || yMin === yMax) { yMin = -10; yMax = 10; }
   const pad = (yMax - yMin) * 0.1;
@@ -238,7 +238,7 @@ function renderFullSignalImage(
   for (let i = 0; i < cropData.length; i += step) {
     const pt = cropData[i];
     const x = tsToX(pt.timestamp_ms);
-    const y = valueToY(pt.value);
+    const y = valueToY(pt.filtered);
     if (!started) { ctx.moveTo(x, y); started = true; }
     else ctx.lineTo(x, y);
   }
@@ -466,7 +466,7 @@ export function EMGMonitor() {
           for (const pt of serial.data) {
             if (pt.timestamp_ms < m.startMs) continue;
             if (pt.timestamp_ms > m.endMs!) break;
-            sumSq += pt.value * pt.value;
+            sumSq += pt.envelope * pt.envelope;
             count++;
           }
           return count > 0 ? Math.sqrt(sumSq / count) : 0;
@@ -518,7 +518,7 @@ export function EMGMonitor() {
       // Recoger RMS de las últimas muestras
       const recent = serial.data.slice(-15);
       if (recent.length > 0) {
-        const r = Math.sqrt(recent.reduce((s, d) => s + d.value * d.value, 0) / recent.length);
+        const r = Math.sqrt(recent.reduce((s, d) => s + d.envelope * d.envelope, 0) / recent.length);
         calSamplesRef.current.push(r);
       }
 
@@ -574,11 +574,11 @@ export function EMGMonitor() {
   const recent = serial.data.slice(-100);
   const rms =
     recent.length > 0
-      ? Math.sqrt(recent.reduce((sum, d) => sum + d.value * d.value, 0) / recent.length)
+      ? Math.sqrt(recent.reduce((sum, d) => sum + d.filtered * d.filtered, 0) / recent.length)
       : 0;
   const peak =
     recent.length > 0
-      ? Math.max(...recent.map((d) => Math.abs(d.value)))
+      ? Math.max(...recent.map((d) => Math.abs(d.filtered)))
       : 0;
 
 
@@ -606,8 +606,8 @@ export function EMGMonitor() {
     let sumSq = 0;
     let maxAbs = 0;
     for (const pt of serial.data) {
-      sumSq += pt.value * pt.value;
-      const a = Math.abs(pt.value);
+      sumSq += pt.filtered * pt.filtered;
+      const a = Math.abs(pt.filtered);
       if (a > maxAbs) maxAbs = a;
     }
     return { rms: Math.sqrt(sumSq / serial.data.length), peak: maxAbs };
@@ -624,9 +624,9 @@ export function EMGMonitor() {
         for (const pt of serial.data) {
           if (pt.timestamp_ms < m.startMs) continue;
           if (pt.timestamp_ms > end) break;
-          if (pt.value < mn) mn = pt.value;
-          if (pt.value > mx) mx = pt.value;
-          sumSq += pt.value * pt.value;
+          if (pt.filtered < mn) mn = pt.filtered;
+          if (pt.filtered > mx) mx = pt.filtered;
+          sumSq += pt.filtered * pt.filtered;
           count++;
         }
         return {
@@ -670,11 +670,11 @@ export function EMGMonitor() {
       for (const pt of serial.data) {
         if (pt.timestamp_ms < m.startMs) continue;
         if (pt.timestamp_ms > end) break;
-        const abs = Math.abs(pt.value);
+        const abs = Math.abs(pt.filtered);
         if (abs > peakVal) peakVal = abs;
-        if (pt.value < mn) mn = pt.value;
-        if (pt.value > mx) mx = pt.value;
-        sumSq += pt.value * pt.value;
+        if (pt.filtered < mn) mn = pt.filtered;
+        if (pt.filtered > mx) mx = pt.filtered;
+        sumSq += pt.filtered * pt.filtered;
         count++;
       }
       const rmsV = count > 0 ? Math.sqrt(sumSq / count) : 0;

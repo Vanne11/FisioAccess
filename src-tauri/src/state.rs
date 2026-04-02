@@ -11,7 +11,10 @@ use fisio_emg::{EmgProcessor, EmgConfig};
 #[derive(Debug, Clone, Serialize)]
 pub struct SerialDataPoint {
     pub timestamp_ms: f64,
-    pub value: f64,
+    /// Señal filtrada (forma de onda, puede ser negativa)
+    pub filtered: f64,
+    /// Envolvente suavizada (siempre >= 0, amplitud de contracción)
+    pub envelope: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,12 +123,11 @@ impl SerialManager {
                         };
 
                         if let Some(mv) = mv_value {
-
-                            let value = if let Some(ref proc) = emg_processor {
+                            let (filtered, envelope) = if let Some(ref proc) = emg_processor {
                                 if let Ok(mut p) = proc.lock() {
                                     let was_calibrating = p.is_calibrating();
 
-                                    let result = p.process(mv);
+                                    let sample = p.process(mv);
 
                                     // Emitir progreso max 10 veces/segundo (no saturar React)
                                     if p.is_calibrating() {
@@ -145,17 +147,18 @@ impl SerialManager {
                                         let _ = app.emit("emg-calibration-done", &status);
                                     }
 
-                                    result
+                                    (sample.filtered, sample.envelope)
                                 } else {
-                                    mv
+                                    (mv, mv.abs())
                                 }
                             } else {
-                                mv
+                                (mv, mv.abs())
                             };
 
                             let point = SerialDataPoint {
                                 timestamp_ms: start.elapsed().as_millis() as f64,
-                                value,
+                                filtered,
+                                envelope,
                             };
                             let _ = app.emit("serial-data", &point);
                         }
