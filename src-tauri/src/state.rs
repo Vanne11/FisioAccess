@@ -104,10 +104,12 @@ impl SerialManager {
                         }
 
                         // Detectar formato:
-                        // - Solo un número: "14143" → raw ADC counts, convertir a mV
-                        // - CSV con comas: "ts,raw,mv" → tomar último campo (ya es mV)
-                        let mv_value = if trimmed.contains(',') {
-                            // CSV: último campo es mV (firmware envía computeVolts)
+                        // - Solo un número: raw del ADC. Solo el EMG (ADS1115)
+                        //   se convierte a mV en el backend; ECG/Spiro pasan
+                        //   el crudo y el frontend lo convierte con su propia
+                        //   calibración (Vref, ganancia, bits del ADC).
+                        // - CSV "ts,raw,mv" → último campo, ya en mV.
+                        let parsed = if trimmed.contains(',') {
                             trimmed
                                 .split(',')
                                 .last()
@@ -116,18 +118,21 @@ impl SerialManager {
                                 .parse::<f64>()
                                 .ok()
                         } else {
-                            // Valor único: raw ADC counts → convertir a mV
                             trimmed.parse::<f64>().ok().map(|raw| {
-                                raw * fisio_emg::converter::ADS_RESOLUTION_MV
+                                if emg_processor.is_some() {
+                                    raw * fisio_emg::converter::ADS_RESOLUTION_MV
+                                } else {
+                                    raw
+                                }
                             })
                         };
 
-                        if let Some(mv) = mv_value {
+                        if let Some(value) = parsed {
                             let (filtered, envelope) = if let Some(ref proc) = emg_processor {
                                 if let Ok(mut p) = proc.lock() {
                                     let was_calibrating = p.is_calibrating();
 
-                                    let sample = p.process(mv);
+                                    let sample = p.process(value);
 
                                     // Emitir progreso max 10 veces/segundo (no saturar React)
                                     if p.is_calibrating() {
@@ -149,10 +154,12 @@ impl SerialManager {
 
                                     (sample.filtered, sample.envelope)
                                 } else {
-                                    (mv, mv.abs())
+                                    (value, value.abs())
                                 }
                             } else {
-                                (mv, mv.abs())
+                                // ECG / Spiro: pasar raw del ADC. El frontend
+                                // se encarga de filtrar y convertir a mV.
+                                (value, value.abs())
                             };
 
                             let point = SerialDataPoint {
