@@ -46,11 +46,32 @@ pub fn serial_connect(
         None
     };
 
-    state.serial.connect(&port, baud_rate, app, emg_proc)?;
+    state
+        .serial
+        .connect(&port, baud_rate, app, emg_proc, mode.clone())?;
     Ok(ConnectionStatus {
         connected: true,
         port: Some(port),
     })
+}
+
+/// Enviar comando al firmware del espirómetro.
+/// Sólo se aceptan los comandos definidos por el firmware Venturi:
+///   'r' / 'R' → calibración completa (200 × 2 ciclos ≈ 4 s)
+///   'v' / 'V' → reset de volumen, mantiene calibración
+/// Cualquier otro carácter se rechaza para evitar enviar basura al MCU.
+#[tauri::command]
+pub fn spiro_send_command(state: State<'_, AppState>, cmd: String) -> Result<(), String> {
+    let c = cmd
+        .chars()
+        .next()
+        .ok_or_else(|| "Comando vacío".to_string())?;
+    let byte = match c {
+        'r' | 'R' => b'r',
+        'v' | 'V' => b'v',
+        other => return Err(format!("Comando spiro no permitido: {other:?}")),
+    };
+    state.serial.write_bytes(&[byte, b'\n'])
 }
 
 #[tauri::command]

@@ -17,6 +17,7 @@ pub fn run() {
             commands::get_connection_state,
             commands::emg_start_calibration,
             commands::emg_calibration_status,
+            commands::spiro_send_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
