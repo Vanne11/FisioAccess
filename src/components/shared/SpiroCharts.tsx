@@ -38,6 +38,10 @@ interface SpiroChartsProps {
   onRefLinesChange: (next: SpiroRefLines) => void;
   markerLines: SpiroMarkerLines;
   onMarkerLinesChange: (next: SpiroMarkerLines) => void;
+  /** Color de la curva actual; si se omite se usan los defaults
+   *  (azul para V-t, rojo para F-V). Útil para mostrar la curva
+   *  seleccionada con el mismo color de su entrada en la lista. */
+  currentColor?: string;
   /** Si se omite, el componente observa el alto disponible del
    *  contenedor padre y llena todo el espacio. */
   height?: number;
@@ -84,6 +88,59 @@ function yAtX(pts: SpiroPoint[], x: number): number | null {
   if (p1.t === p0.t) return p0.v;
   const t = (x - p0.t) / (p1.t - p0.t);
   return p0.v + (p1.v - p0.v) * t;
+}
+
+/** Flujo en la curva cuando el volumen alcanza por primera vez `target`.
+ *  Devuelve null si la curva nunca llega a ese volumen. Coincide con
+ *  la lógica usada en lib/spiro/metrics.flowAtVolume. */
+function flowAtV(pts: SpiroPoint[], target: number): number | null {
+  for (let i = 1; i < pts.length; i++) {
+    const v0 = pts[i - 1].v;
+    const v1 = pts[i].v;
+    if (v0 <= target && v1 >= target && v1 !== v0) {
+      const t = (target - v0) / (v1 - v0);
+      return pts[i - 1].f + (pts[i].f - pts[i - 1].f) * t;
+    }
+  }
+  return null;
+}
+
+interface VtView {
+  tMin: number;
+  tMax: number;
+  vMin: number;
+  vMax: number;
+}
+interface FvView {
+  vMin: number;
+  vMax: number;
+  fMin: number;
+  fMax: number;
+}
+const DEFAULT_VT_VIEW: VtView = { tMin: VT_T_MIN, tMax: VT_T_MAX, vMin: VT_V_MIN, vMax: VT_V_MAX };
+const DEFAULT_FV_VIEW: FvView = { vMin: FV_V_MIN, vMax: FV_V_MAX, fMin: FV_F_MIN, fMax: FV_F_MAX };
+
+const MIN_SPAN_T = 0.5; // s
+const MIN_SPAN_V = 0.5; // L
+const MIN_SPAN_F = 1.0; // L/s
+const MAX_SPAN_T = 30;
+const MAX_SPAN_V = 20;
+const MAX_SPAN_F = 30;
+
+function zoomRange(
+  min: number,
+  max: number,
+  center: number,
+  factor: number,
+  minSpan: number,
+  maxSpan: number,
+): [number, number] {
+  let span = (max - min) * factor;
+  span = Math.max(minSpan, Math.min(maxSpan, span));
+  const ratio = (center - min) / (max - min);
+  let nMin = center - span * ratio;
+  let nMax = center + span * (1 - ratio);
+  return [nMin, nMax];
 }
 
 function themeColors() {
@@ -244,11 +301,13 @@ interface ChartPanelProps {
   onMouseDown?: (e: React.MouseEvent<HTMLCanvasElement>) => void;
   onMouseMove?: (e: React.MouseEvent<HTMLCanvasElement>) => void;
   onMouseUp?: (e: React.MouseEvent<HTMLCanvasElement>) => void;
+  onWheel?: (e: React.WheelEvent<HTMLCanvasElement>) => void;
+  onDoubleClick?: (e: React.MouseEvent<HTMLCanvasElement>) => void;
   cursor?: string;
   canvasRef?: React.Ref<HTMLCanvasElement>;
 }
 
-function ChartPanel({ width, height, draw, onMouseDown, onMouseMove, onMouseUp, cursor, canvasRef }: ChartPanelProps) {
+function ChartPanel({ width, height, draw, onMouseDown, onMouseMove, onMouseUp, onWheel, onDoubleClick, cursor, canvasRef }: ChartPanelProps) {
   const innerRef = useRef<HTMLCanvasElement>(null);
   const refToUse = (canvasRef ?? innerRef) as React.RefObject<HTMLCanvasElement>;
 
@@ -266,6 +325,20 @@ function ChartPanel({ width, height, draw, onMouseDown, onMouseMove, onMouseUp, 
     draw(ctx, width, height);
   }, [draw, width, height, refToUse]);
 
+  // React onWheel es passive por defecto en algunos browsers, lo cual
+  // ignora preventDefault(). Para evitar el scroll de la página cuando
+  // se hace wheel sobre el canvas, registramos manualmente non-passive.
+  useEffect(() => {
+    const canvas = refToUse.current;
+    if (!canvas || !onWheel) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      onWheel(e as unknown as React.WheelEvent<HTMLCanvasElement>);
+    };
+    canvas.addEventListener("wheel", handler, { passive: false });
+    return () => canvas.removeEventListener("wheel", handler);
+  }, [onWheel, refToUse]);
+
   return (
     <canvas
       ref={refToUse}
@@ -273,9 +346,14 @@ function ChartPanel({ width, height, draw, onMouseDown, onMouseMove, onMouseUp, 
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseLeave={onMouseUp}
+      onDoubleClick={onDoubleClick}
       style={{ cursor: cursor ?? "default", display: "block" }}
     />
   );
+}
+
+export interface SpiroChartsHandle {
+  resetZoom: () => void;
 }
 
 export function SpiroCharts({
@@ -285,6 +363,7 @@ export function SpiroCharts({
   onRefLinesChange,
   markerLines,
   onMarkerLinesChange,
+  currentColor,
   height,
   minHeight = 240,
 }: SpiroChartsProps) {
@@ -292,6 +371,25 @@ export function SpiroCharts({
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const fvCanvasRef = useRef<HTMLCanvasElement>(null);
   const vtCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Viewports independientes para zoom/pan; no modifican datos.
+  const [vtView, setVtView] = useState<VtView>(DEFAULT_VT_VIEW);
+  const [fvView, setFvView] = useState<FvView>(DEFAULT_FV_VIEW);
+  const resetZoom = useCallback(() => {
+    setVtView(DEFAULT_VT_VIEW);
+    setFvView(DEFAULT_FV_VIEW);
+  }, []);
+  const isVtZoomed =
+    vtView.tMin !== DEFAULT_VT_VIEW.tMin ||
+    vtView.tMax !== DEFAULT_VT_VIEW.tMax ||
+    vtView.vMin !== DEFAULT_VT_VIEW.vMin ||
+    vtView.vMax !== DEFAULT_VT_VIEW.vMax;
+  const isFvZoomed =
+    fvView.vMin !== DEFAULT_FV_VIEW.vMin ||
+    fvView.vMax !== DEFAULT_FV_VIEW.vMax ||
+    fvView.fMin !== DEFAULT_FV_VIEW.fMin ||
+    fvView.fMax !== DEFAULT_FV_VIEW.fMax;
+  const isZoomed = isVtZoomed || isFvZoomed;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -327,29 +425,32 @@ export function SpiroCharts({
 
       const plotW = w - MARGIN_LEFT - MARGIN_RIGHT;
       const plotH = h - MARGIN_TOP - MARGIN_BOTTOM;
+      const { tMin, tMax, vMin, vMax } = vtView;
+      const xStep = (tMax - tMin) > 10 ? 2 : (tMax - tMin) > 3 ? 1 : 0.5;
+      const yStep = (vMax - vMin) > 6 ? 1 : 0.5;
 
       drawGrid(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        VT_T_MIN, VT_T_MAX, VT_V_MIN, VT_V_MAX, 1, 1, theme.grid);
+        tMin, tMax, vMin, vMax, xStep, yStep, theme.grid);
       drawZeroLines(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        VT_T_MIN, VT_T_MAX, VT_V_MIN, VT_V_MAX, theme.axis);
+        tMin, tMax, vMin, vMax, theme.axis);
 
       // Curvas pasadas (discontinuas)
       for (const rec of recordings) {
         const pts = rec.data.map(p => ({ x: p.t, y: p.v }));
         drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-          VT_T_MIN, VT_T_MAX, VT_V_MIN, VT_V_MAX, rec.color, true);
+          tMin, tMax, vMin, vMax, rec.color, true);
       }
 
-      // Curva actual
+      // Curva actual (color personalizado si la prueba seleccionada lo define)
       const pts = current.map(p => ({ x: p.t, y: p.v }));
       drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        VT_T_MIN, VT_T_MAX, VT_V_MIN, VT_V_MAX, COLOR_CURRENT_VT, false);
+        tMin, tMax, vMin, vMax, currentColor ?? COLOR_CURRENT_VT, false);
 
       // ── Marcadores verticales A y B (cursor medidor) ───────────
       const xToPx = (x: number) =>
-        MARGIN_LEFT + ((x - VT_T_MIN) / (VT_T_MAX - VT_T_MIN)) * plotW;
+        MARGIN_LEFT + ((x - tMin) / (tMax - tMin)) * plotW;
       const yToPx = (y: number) =>
-        MARGIN_TOP + (1 - (y - VT_V_MIN) / (VT_V_MAX - VT_V_MIN)) * plotH;
+        MARGIN_TOP + (1 - (y - vMin) / (vMax - vMin)) * plotH;
 
       ctx.save();
       ctx.beginPath();
@@ -410,10 +511,10 @@ export function SpiroCharts({
       ctx.restore();
 
       drawAxisLabels(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        VT_T_MIN, VT_T_MAX, VT_V_MIN, VT_V_MAX, 2, 1,
+        tMin, tMax, vMin, vMax, xStep, yStep,
         theme.label, "t (s)", "V (L)");
     },
-    [current, recordings, markerLines],
+    [current, recordings, markerLines, vtView, currentColor],
   );
 
   // ── Canvas Flujo / Volumen ────────────────────────────────────────
@@ -425,25 +526,29 @@ export function SpiroCharts({
 
       const plotW = w - MARGIN_LEFT - MARGIN_RIGHT;
       const plotH = h - MARGIN_TOP - MARGIN_BOTTOM;
+      const { vMin, vMax, fMin, fMax } = fvView;
+      const xStep = (vMax - vMin) > 6 ? 1 : 0.5;
+      const yStep = (fMax - fMin) > 12 ? 2 : 1;
 
       drawGrid(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        FV_V_MIN, FV_V_MAX, FV_F_MIN, FV_F_MAX, 1, 2, theme.grid);
+        vMin, vMax, fMin, fMax, xStep, yStep, theme.grid);
       drawZeroLines(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        FV_V_MIN, FV_V_MAX, FV_F_MIN, FV_F_MAX, theme.axis);
+        vMin, vMax, fMin, fMax, theme.axis);
 
       for (const rec of recordings) {
         const pts = rec.data.map(p => ({ x: p.v, y: p.f }));
         drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-          FV_V_MIN, FV_V_MAX, FV_F_MIN, FV_F_MAX, rec.color, true);
+          vMin, vMax, fMin, fMax, rec.color, true);
       }
 
       const pts = current.map(p => ({ x: p.v, y: p.f }));
       drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        FV_V_MIN, FV_V_MAX, FV_F_MIN, FV_F_MAX, COLOR_CURRENT_FV, false);
+        vMin, vMax, fMin, fMax, currentColor ?? COLOR_CURRENT_FV, false);
 
       // Líneas de referencia verticales: PEF/FVC arrastrables (sólidas);
       // FEF25/50/75 derivadas (discontinuas). Labels rotados 90° para
-      // que nunca se solapen aunque las líneas estén juntas.
+      // que nunca se solapen aunque las líneas estén juntas. Muestran
+      // volumen + flujo de la curva actual en ese volumen.
       ctx.save();
       ctx.beginPath();
       ctx.rect(MARGIN_LEFT, MARGIN_TOP, plotW, plotH);
@@ -456,8 +561,8 @@ export function SpiroCharts({
         { x: fvc, label: "FVC", draggable: true },
       ];
       for (const r of refs) {
-        if (r.x < FV_V_MIN || r.x > FV_V_MAX) continue;
-        const px = MARGIN_LEFT + ((r.x - FV_V_MIN) / (FV_V_MAX - FV_V_MIN)) * plotW;
+        if (r.x < vMin || r.x > vMax) continue;
+        const px = MARGIN_LEFT + ((r.x - vMin) / (vMax - vMin)) * plotW;
         const color = r.draggable ? COLOR_REF_DRAG : COLOR_REF_AUTO;
         ctx.strokeStyle = color;
         ctx.lineWidth = r.draggable ? 1.5 : 1;
@@ -467,7 +572,12 @@ export function SpiroCharts({
         ctx.lineTo(px, MARGIN_TOP + plotH);
         ctx.stroke();
         ctx.setLineDash([]);
-        // Label vertical: nunca se solapan aunque las líneas estén juntas
+        // Flujo en este volumen sobre la curva actual (coincide con el panel)
+        const f = flowAtV(current, r.x);
+        const valueText =
+          f !== null && Number.isFinite(f)
+            ? `${r.label}  v:${r.x.toFixed(2)}L  f:${f.toFixed(2)}L/s`
+            : `${r.label}  v:${r.x.toFixed(2)}L`;
         ctx.save();
         ctx.translate(px + 3, MARGIN_TOP + 4);
         ctx.rotate(Math.PI / 2);
@@ -475,16 +585,16 @@ export function SpiroCharts({
         ctx.font = `bold ${r.draggable ? 10 : 9}px monospace`;
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(`${r.label} ${r.x.toFixed(2)}`, 0, 0);
+        ctx.fillText(valueText, 0, 0);
         ctx.restore();
       }
       ctx.restore();
 
       drawAxisLabels(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
-        FV_V_MIN, FV_V_MAX, FV_F_MIN, FV_F_MAX, 1, 2,
+        vMin, vMax, fMin, fMax, xStep, yStep,
         theme.label, "V (L)", "Flujo (L/s)");
     },
-    [current, recordings, pef, fvc, fef25, fef50, fef75],
+    [current, recordings, pef, fvc, fef25, fef50, fef75, fvView, currentColor],
   );
 
   // ── Drag de PEF / FVC en el canvas Flujo/Volumen ─────────────────
@@ -493,21 +603,47 @@ export function SpiroCharts({
   // ── Drag de marcadores A / B en el canvas Volumen/Tiempo ─────────
   const vtDragRef = useRef<{ which: "a" | "b" } | null>(null);
   const [vtCursor, setVtCursor] = useState("default");
+  // Pan (shift+drag o middle button): mueve el viewport, no los datos
+  const fvPanRef = useRef<{ startV: number; startF: number; view: FvView } | null>(null);
+  const vtPanRef = useRef<{ startT: number; startV: number; view: VtView } | null>(null);
 
-  const xFromMouse = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+  const fvFromMouse = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = fvCanvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
     const plotW = fvWidth - MARGIN_LEFT - MARGIN_RIGHT;
-    const v = FV_V_MIN + ((px - MARGIN_LEFT) / plotW) * (FV_V_MAX - FV_V_MIN);
-    const pxPerL = plotW / (FV_V_MAX - FV_V_MIN);
-    return { v, px, plotW, pxPerL };
-  }, [fvWidth]);
+    const plotH = canvas.clientHeight - MARGIN_TOP - MARGIN_BOTTOM;
+    const v = fvView.vMin + ((px - MARGIN_LEFT) / plotW) * (fvView.vMax - fvView.vMin);
+    const f = fvView.fMax - ((py - MARGIN_TOP) / plotH) * (fvView.fMax - fvView.fMin);
+    const pxPerL = plotW / (fvView.vMax - fvView.vMin);
+    return { v, f, px, py, plotW, plotH, pxPerL };
+  }, [fvWidth, fvView]);
+
+  const vtFromMouse = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = vtCanvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const plotW = vtWidth - MARGIN_LEFT - MARGIN_RIGHT;
+    const plotH = canvas.clientHeight - MARGIN_TOP - MARGIN_BOTTOM;
+    const t = vtView.tMin + ((px - MARGIN_LEFT) / plotW) * (vtView.tMax - vtView.tMin);
+    const v = vtView.vMax - ((py - MARGIN_TOP) / plotH) * (vtView.vMax - vtView.vMin);
+    const pxPerS = plotW / (vtView.tMax - vtView.tMin);
+    return { t, v, px, py, pxPerS };
+  }, [vtWidth, vtView]);
 
   const handleFVDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = xFromMouse(e);
+    const m = fvFromMouse(e);
     if (!m) return;
+    // Shift+click o botón medio → pan
+    if (e.shiftKey || e.button === 1) {
+      fvPanRef.current = { startV: m.v, startF: m.f, view: fvView };
+      setCursor("grabbing");
+      return;
+    }
     const grabL = REF_GRAB_PX / m.pxPerL;
     if (Math.abs(m.v - pef) < grabL) {
       dragRef.current = { which: "pef" };
@@ -516,15 +652,29 @@ export function SpiroCharts({
       dragRef.current = { which: "fvc" };
       setCursor("ew-resize");
     }
-  }, [pef, fvc, xFromMouse]);
+  }, [pef, fvc, fvFromMouse, fvView]);
 
   const handleFVMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = xFromMouse(e);
+    const m = fvFromMouse(e);
     if (!m) return;
+    if (fvPanRef.current) {
+      // Mover el viewport en sentido inverso al delta del cursor
+      const v0 = fvPanRef.current.startV;
+      const f0 = fvPanRef.current.startF;
+      const base = fvPanRef.current.view;
+      const dv = m.v - v0;
+      const df = m.f - f0;
+      setFvView({
+        vMin: base.vMin - dv,
+        vMax: base.vMax - dv,
+        fMin: base.fMin - df,
+        fMax: base.fMax - df,
+      });
+      return;
+    }
     if (dragRef.current) {
-      const clamped = Math.max(FV_V_MIN, Math.min(FV_V_MAX, m.v));
+      const clamped = Math.max(fvView.vMin, Math.min(fvView.vMax, m.v));
       if (dragRef.current.which === "pef") {
-        // PEF < FVC siempre
         onRefLinesChange({ pef: Math.min(clamped, fvc - 0.05), fvc });
       } else {
         onRefLinesChange({ pef, fvc: Math.max(clamped, pef + 0.05) });
@@ -534,33 +684,44 @@ export function SpiroCharts({
     const grabL = REF_GRAB_PX / m.pxPerL;
     if (Math.abs(m.v - pef) < grabL || Math.abs(m.v - fvc) < grabL) {
       setCursor("ew-resize");
+    } else if (e.shiftKey) {
+      setCursor("grab");
     } else {
       setCursor("default");
     }
-  }, [pef, fvc, xFromMouse, onRefLinesChange]);
+  }, [pef, fvc, fvFromMouse, onRefLinesChange, fvView]);
 
   const handleFVUp = useCallback(() => {
     dragRef.current = null;
+    fvPanRef.current = null;
     setCursor("default");
   }, []);
 
-  // ── Handlers V/T para marcadores A/B ──────────────────────────────
-  const tFromMouse = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = vtCanvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const plotW = vtWidth - MARGIN_LEFT - MARGIN_RIGHT;
-    const t = VT_T_MIN + ((px - MARGIN_LEFT) / plotW) * (VT_T_MAX - VT_T_MIN);
-    const pxPerS = plotW / (VT_T_MAX - VT_T_MIN);
-    return { t, pxPerS };
-  }, [vtWidth]);
+  const handleFVWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const m = fvFromMouse(e as unknown as React.MouseEvent<HTMLCanvasElement>);
+    if (!m) return;
+    const factor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
+    setFvView((v) => {
+      const [vMin, vMax] = zoomRange(v.vMin, v.vMax, m.v, factor, MIN_SPAN_V, MAX_SPAN_V);
+      const [fMin, fMax] = zoomRange(v.fMin, v.fMax, m.f, factor, MIN_SPAN_F, MAX_SPAN_F);
+      return { vMin, vMax, fMin, fMax };
+    });
+  }, [fvFromMouse]);
+
+  const handleFVDoubleClick = useCallback(() => {
+    setFvView(DEFAULT_FV_VIEW);
+  }, []);
 
   const handleVTDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = tFromMouse(e);
+    const m = vtFromMouse(e);
     if (!m) return;
+    if (e.shiftKey || e.button === 1) {
+      vtPanRef.current = { startT: m.t, startV: m.v, view: vtView };
+      setVtCursor("grabbing");
+      return;
+    }
     const grabS = REF_GRAB_PX / m.pxPerS;
-    // Si A y B se solapan, preferir el que esté más cerca
     const dA = Math.abs(m.t - markerLines.a);
     const dB = Math.abs(m.t - markerLines.b);
     if (dA < grabS && dA <= dB) {
@@ -570,13 +731,27 @@ export function SpiroCharts({
       vtDragRef.current = { which: "b" };
       setVtCursor("ew-resize");
     }
-  }, [markerLines, tFromMouse]);
+  }, [markerLines, vtFromMouse, vtView]);
 
   const handleVTMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = tFromMouse(e);
+    const m = vtFromMouse(e);
     if (!m) return;
+    if (vtPanRef.current) {
+      const t0 = vtPanRef.current.startT;
+      const v0 = vtPanRef.current.startV;
+      const base = vtPanRef.current.view;
+      const dt = m.t - t0;
+      const dv = m.v - v0;
+      setVtView({
+        tMin: base.tMin - dt,
+        tMax: base.tMax - dt,
+        vMin: base.vMin - dv,
+        vMax: base.vMax - dv,
+      });
+      return;
+    }
     if (vtDragRef.current) {
-      const clamped = Math.max(VT_T_MIN, Math.min(VT_T_MAX, m.t));
+      const clamped = Math.max(vtView.tMin, Math.min(vtView.tMax, m.t));
       if (vtDragRef.current.which === "a") {
         onMarkerLinesChange({ a: clamped, b: markerLines.b });
       } else {
@@ -587,20 +762,39 @@ export function SpiroCharts({
     const grabS = REF_GRAB_PX / m.pxPerS;
     if (Math.abs(m.t - markerLines.a) < grabS || Math.abs(m.t - markerLines.b) < grabS) {
       setVtCursor("ew-resize");
+    } else if (e.shiftKey) {
+      setVtCursor("grab");
     } else {
       setVtCursor("default");
     }
-  }, [markerLines, tFromMouse, onMarkerLinesChange]);
+  }, [markerLines, vtFromMouse, onMarkerLinesChange, vtView]);
 
   const handleVTUp = useCallback(() => {
     vtDragRef.current = null;
+    vtPanRef.current = null;
     setVtCursor("default");
+  }, []);
+
+  const handleVTWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const m = vtFromMouse(e as unknown as React.MouseEvent<HTMLCanvasElement>);
+    if (!m) return;
+    const factor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
+    setVtView((v) => {
+      const [tMin, tMax] = zoomRange(v.tMin, v.tMax, m.t, factor, MIN_SPAN_T, MAX_SPAN_T);
+      const [vMin, vMax] = zoomRange(v.vMin, v.vMax, m.v, factor, MIN_SPAN_V, MAX_SPAN_V);
+      return { tMin, tMax, vMin, vMax };
+    });
+  }, [vtFromMouse]);
+
+  const handleVTDoubleClick = useCallback(() => {
+    setVtView(DEFAULT_VT_VIEW);
   }, []);
 
   return (
     <div
       ref={containerRef}
-      style={{ width: "100%", height: height ?? "100%", minHeight }}
+      style={{ width: "100%", height: height ?? "100%", minHeight, position: "relative" }}
       className="flex gap-2"
     >
       {containerWidth > 0 && (
@@ -612,6 +806,8 @@ export function SpiroCharts({
             onMouseDown={handleVTDown}
             onMouseMove={handleVTMove}
             onMouseUp={handleVTUp}
+            onWheel={handleVTWheel}
+            onDoubleClick={handleVTDoubleClick}
             cursor={vtCursor}
             canvasRef={vtCanvasRef}
           />
@@ -622,10 +818,32 @@ export function SpiroCharts({
             onMouseDown={handleFVDown}
             onMouseMove={handleFVMove}
             onMouseUp={handleFVUp}
+            onWheel={handleFVWheel}
+            onDoubleClick={handleFVDoubleClick}
             cursor={cursor}
             canvasRef={fvCanvasRef}
           />
         </>
+      )}
+      {isZoomed && (
+        <button
+          onClick={resetZoom}
+          title="Restablecer zoom (también doble click sobre el gráfico)"
+          style={{
+            position: "absolute",
+            top: 6,
+            right: 6,
+            fontSize: 10,
+            padding: "2px 8px",
+            borderRadius: 4,
+            background: "rgba(15, 23, 42, 0.85)",
+            color: "#e2e8f0",
+            border: "1px solid rgba(148, 163, 184, 0.4)",
+            cursor: "pointer",
+          }}
+        >
+          Reset zoom
+        </button>
       )}
     </div>
   );

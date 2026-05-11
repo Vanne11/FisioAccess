@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Wind, Trash2, FileText, FolderOpen, Save as SaveIcon, Eraser, Play, RefreshCcw } from "lucide-react";
+import { Wind, Trash2, FileText, FolderOpen, Save as SaveIcon, Eraser, Play, RefreshCcw, FileJson, FileSignature } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -18,6 +18,32 @@ import {
   type SpiroMarkerLines,
 } from "@/components/shared/SpiroCharts";
 import { ReportPreview, type ReportData } from "@/components/shared/ReportPreview";
+import { SpiroSaveDialog } from "@/components/shared/SpiroSaveDialog";
+import {
+  buildStudy,
+  studyToPythonJSON,
+  studyFromPythonJSON,
+  studyFilename,
+  type BronchodilatorStatus,
+  type SpiroPatient,
+  type SpiroAnalysis,
+} from "@/lib/spiro/types";
+import {
+  computeSpiroMetrics,
+  averageMetrics,
+  type SpiroMetrics,
+  type SpiroGroupAverage,
+} from "@/lib/spiro/metrics";
+import {
+  computeQuality,
+  computeSuggestions,
+  gradeColorClasses,
+  type QualityResult,
+  type QualitySuggestion,
+} from "@/lib/spiro/quality";
+import { generateSpiroPDF } from "@/lib/spiro/pdf";
+import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
+import { useReportStore } from "@/stores/useReportStore";
 
 interface SpiroDataPayload {
   t_ms: number;
@@ -52,6 +78,78 @@ const LS_MAX_RECORDINGS = "spiro.maxRecordings";
 const LS_RECORDING_SECS = "spiro.recordingSecs";
 const LS_MARKER_A = "spiro.markerA";
 const LS_MARKER_B = "spiro.markerB";
+
+function QualityBlock({
+  label,
+  data,
+  accent,
+}: {
+  label: string;
+  data: {
+    quality: QualityResult;
+    suggestions: QualitySuggestion[];
+  };
+  accent: string;
+}) {
+  const { quality, suggestions } = data;
+  return (
+    <div className="mb-2 last:mb-0">
+      <div className="flex items-center justify-between text-[10px]">
+        <span className={`font-semibold ${accent}`}>{label}</span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${gradeColorClasses(quality.grade)}`}
+          >
+            {quality.grade}
+          </span>
+          <span className="text-secondary">
+            n={quality.nManeuvers}
+            {quality.repeatabilityMl !== null
+              ? ` · rep ${quality.repeatabilityMl.toFixed(0)} ml`
+              : ""}
+          </span>
+        </span>
+      </div>
+      {suggestions.length > 0 && (
+        <ul className="mt-1 text-[10px] text-secondary space-y-0.5">
+          {suggestions.map((s) => (
+            <li key={s.removeRecordingNumber}>
+              · Quitar Prueba {s.removeRecordingNumber} →{" "}
+              <span className="text-emerald-300 font-semibold">{s.newGrade}</span>
+              {s.newRepeatabilityMl !== null
+                ? ` (rep ${s.newRepeatabilityMl.toFixed(0)} ml)`
+                : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function GroupRow({
+  label,
+  pre,
+  post,
+  digits = 2,
+  suffix = "",
+}: {
+  label: string;
+  pre: number | null;
+  post: number | null;
+  digits?: number;
+  suffix?: string;
+}) {
+  const fmt = (v: number | null) =>
+    v !== null && Number.isFinite(v) ? `${v.toFixed(digits)}${suffix}` : "—";
+  return (
+    <tr>
+      <td className="text-secondary pr-1">{label}</td>
+      <td className="text-right pr-1 text-sky-300">{fmt(pre)}</td>
+      <td className="text-right text-amber-300">{fmt(post)}</td>
+    </tr>
+  );
+}
 
 function loadNumber(key: string, fallback: number, min: number, max: number): number {
   if (typeof window === "undefined") return fallback;
@@ -113,6 +211,21 @@ export function SpiroMonitor() {
   // Prueba seleccionada (id). Cuando se selecciona, esa curva es la
   // "activa" (sólida) sobre la que operan los marcadores vLine A/B.
   const [selectedRecId, setSelectedRecId] = useState<number | null>(null);
+
+  // Estado broncodilatador por maniobra (id -> PRE/POST). Default PRE.
+  // La UI para alternar PRE/POST llega en la tarea #2; aquí dejamos el
+  // estado expuesto para que el guardado JSON pueda persistirlo.
+  const [bronchoByRec, setBronchoByRec] = useState<Record<number, BronchodilatorStatus>>({});
+
+  // Datos del estudio en memoria (paciente + análisis) para reutilizar
+  // entre Guardar y Vista previa, y para conservar lo escrito al recargar.
+  const [studyPatient, setStudyPatient] = useState<SpiroPatient | undefined>();
+  const [studyAnalysis, setStudyAnalysis] = useState<SpiroAnalysis | undefined>();
+  const [saveOpen, setSaveOpen] = useState(false);
+  // saveMode: 'save' → escribir JSON; 'pdf' → tras pedir paciente, exportar PDF
+  const [saveMode, setSaveMode] = useState<"save" | "pdf">("save");
+  const workDir = useWorkspaceStore((s) => s.workDir);
+  const reportConfig = useReportStore((s) => s.config);
 
   // Refs para no provocar re-render por cada muestra (≈50 Hz)
   const lastTMsRef = useRef<number | null>(null);
@@ -427,6 +540,160 @@ export function SpiroMonitor() {
     setDisplayMode("imported");
   }, [serial]);
 
+  // ─── Estudio (JSON con paciente + maniobras) ─────────────────────
+  const captureChartsImage = useCallback((): string => {
+    const host = chartsHostRef.current;
+    if (!host) return "";
+    const canvases = host.querySelectorAll("canvas");
+    if (canvases.length === 0) return "";
+    let totalW = 0;
+    let maxH = 0;
+    canvases.forEach((c) => {
+      totalW += c.width;
+      maxH = Math.max(maxH, c.height);
+    });
+    const out = document.createElement("canvas");
+    out.width = totalW;
+    out.height = maxH;
+    const ctx = out.getContext("2d");
+    if (!ctx) return "";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, totalW, maxH);
+    let x = 0;
+    canvases.forEach((c) => {
+      ctx.drawImage(c, x, 0);
+      x += c.width;
+    });
+    return out.toDataURL("image/png");
+  }, []);
+
+  const exportStudyAsPDF = useCallback(
+    async (patient: SpiroPatient, analysis: SpiroAnalysis) => {
+      const study = buildStudy({
+        patient,
+        analysis,
+        recordings,
+        bronchodilatorByRec: bronchoByRec,
+        refLines,
+        markerLines,
+      });
+      const signalImage = captureChartsImage();
+      const pdf = generateSpiroPDF(study, {
+        config: reportConfig,
+        signalImage,
+      });
+      const base = studyFilename(patient, study.timestamp).replace(/\.json$/, ".pdf");
+      const defaultPath = workDir ? `${workDir}/${base}` : base;
+      const path = await saveDialog({
+        defaultPath,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (!path) return;
+      const bytes = pdf.output("arraybuffer");
+      await writeFile(path, new Uint8Array(bytes));
+      setStudyPatient(patient);
+      setStudyAnalysis(analysis);
+      setLastCalMsg(`PDF clínico guardado en ${path}`);
+    },
+    [recordings, bronchoByRec, refLines, markerLines, workDir, reportConfig, captureChartsImage],
+  );
+
+  const handleSaveStudy = useCallback(
+    async (patient: SpiroPatient, analysis: SpiroAnalysis) => {
+      if (saveMode === "pdf") {
+        await exportStudyAsPDF(patient, analysis);
+        return;
+      }
+      const study = buildStudy({
+        patient,
+        analysis,
+        recordings,
+        bronchodilatorByRec: bronchoByRec,
+        refLines,
+        markerLines,
+      });
+      const json = studyToPythonJSON(study);
+      const filename = studyFilename(patient, study.timestamp);
+      const defaultPath = workDir ? `${workDir}/${filename}` : filename;
+      const path = await saveDialog({
+        defaultPath,
+        filters: [{ name: "Estudio espirometría", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await writeFile(path, new TextEncoder().encode(json));
+      setStudyPatient(patient);
+      setStudyAnalysis(analysis);
+      setLastCalMsg(`Estudio guardado en ${path}`);
+    },
+    [saveMode, exportStudyAsPDF, recordings, bronchoByRec, refLines, markerLines, workDir],
+  );
+
+  const handleExportPDF = useCallback(() => {
+    setSaveMode("pdf");
+    setSaveOpen(true);
+  }, []);
+
+  const handleOpenSaveStudy = useCallback(() => {
+    setSaveMode("save");
+    setSaveOpen(true);
+  }, []);
+
+  const handleOpenStudy = useCallback(async () => {
+    const path = await openDialog({
+      multiple: false,
+      filters: [{ name: "Estudio espirometría", extensions: ["json"] }],
+    });
+    if (!path || typeof path !== "string") return;
+    let text: string;
+    try {
+      text = await readTextFile(path);
+    } catch (e) {
+      setLastCalMsg(`No se pudo leer: ${e}`);
+      return;
+    }
+    let study;
+    try {
+      study = studyFromPythonJSON(text);
+    } catch (e) {
+      setLastCalMsg(`Estudio inválido: ${e}`);
+      return;
+    }
+    if (serial.isConnected) await serial.disconnect();
+    pendingRecordRef.current = false;
+    pendingArmRef.current = false;
+    clearArmFallback();
+    recStartTMsRef.current = null;
+    accumRef.current = [];
+    setDisplayData([]);
+    setDisplayMode("imported");
+    // Restaurar maniobras conservando los ids internos
+    const newBroncho: Record<number, BronchodilatorStatus> = {};
+    const newRecordings: SpiroRecording[] = study.recordings.map((r) => {
+      const id = nextRecIdRef.current++;
+      newBroncho[id] = r.bronchodilatorStatus;
+      return {
+        id,
+        number: r.recordingNumber,
+        color: r.color || COLORS[(r.recordingNumber - 1) % COLORS.length],
+        data: r.data,
+      };
+    });
+    setRecordings(newRecordings);
+    setBronchoByRec(newBroncho);
+    // Restaurar posiciones de líneas (usamos las del primer entry)
+    const firstLp = Object.values(study.linePositions)[0];
+    if (firstLp) {
+      setRefLines({ pef: firstLp.refPef, fvc: firstLp.refFvc });
+      setMarkerLines({ a: firstLp.markerA, b: firstLp.markerB });
+    }
+    setStudyPatient(study.patient);
+    setStudyAnalysis(study.analysis);
+    setSelectedRecId(newRecordings[0]?.id ?? null);
+    setLastCalMsg(
+      `Estudio cargado: ${study.patient.nombre || "(sin nombre)"} — ${newRecordings.length} maniobra(s)`,
+    );
+  }, [serial]);
+
   // ─── Habilitación de botones (spec sección 5) ────────────────────
   const isConnected = fsm !== "disconnected";
   const isRecording = fsm === "recording";
@@ -536,48 +803,79 @@ export function SpiroMonitor() {
   // - FVC (L): volumen máximo alcanzado = max(v)
   // - FEV(A)/FEV(B): volumen interpolado en cada cursor
   // - FEF25/50/75: flujo cuando se ha exhalado 25/50/75 % del FVC
-  const measurements = useMemo(() => {
-    if (currentCurve.length === 0) {
-      return null;
-    }
-    const pef = currentCurve.reduce((m, p) => (p.f > m ? p.f : m), -Infinity);
-    const fvc = currentCurve.reduce((m, p) => (p.v > m ? p.v : m), -Infinity);
-    const interpAt = (xTarget: number): number | null => {
-      if (currentCurve.length < 2) return null;
-      if (xTarget < currentCurve[0].t || xTarget > currentCurve[currentCurve.length - 1].t) return null;
-      let i = 1;
-      while (i < currentCurve.length && currentCurve[i].t < xTarget) i++;
-      if (i >= currentCurve.length) return currentCurve[currentCurve.length - 1].v;
-      const p0 = currentCurve[i - 1];
-      const p1 = currentCurve[i];
-      if (p1.t === p0.t) return p0.v;
-      const t = (xTarget - p0.t) / (p1.t - p0.t);
-      return p0.v + (p1.v - p0.v) * t;
+  // - FEV(A)/FVC: ratio (equivale a FEV1/FVC si el cursor A está en 1.0 s)
+  const measurements = useMemo<SpiroMetrics | null>(
+    () => computeSpiroMetrics(currentCurve, markerLines.a, markerLines.b),
+    [currentCurve, markerLines],
+  );
+
+  // Helpers PRE/POST
+  const getBroncho = useCallback(
+    (id: number): BronchodilatorStatus => bronchoByRec[id] ?? "PRE",
+    [bronchoByRec],
+  );
+  const toggleBroncho = useCallback((id: number) => {
+    setBronchoByRec((prev) => {
+      const cur = prev[id] ?? "PRE";
+      return { ...prev, [id]: cur === "PRE" ? "POST" : "PRE" };
+    });
+  }, []);
+
+  // Métricas y promedios por grupo (PRE/POST) sobre todas las maniobras.
+  // Además calculamos grado de calidad ATS/ERS y sugerencias de descarte.
+  const groupAnalysis = useMemo<{
+    pre: {
+      avg: SpiroGroupAverage | null;
+      quality: QualityResult;
+      suggestions: QualitySuggestion[];
     };
-    const fevA = interpAt(markerLines.a);
-    const fevB = interpAt(markerLines.b);
-    const flowAtVolume = (target: number): number | null => {
-      for (let i = 1; i < currentCurve.length; i++) {
-        const v0 = currentCurve[i - 1].v;
-        const v1 = currentCurve[i].v;
-        if (v0 <= target && v1 >= target && v1 !== v0) {
-          const t = (target - v0) / (v1 - v0);
-          return currentCurve[i - 1].f + (currentCurve[i].f - currentCurve[i - 1].f) * t;
-        }
+    post: {
+      avg: SpiroGroupAverage | null;
+      quality: QualityResult;
+      suggestions: QualitySuggestion[];
+    };
+  }>(() => {
+    const preMetrics: SpiroMetrics[] = [];
+    const preNums: number[] = [];
+    const postMetrics: SpiroMetrics[] = [];
+    const postNums: number[] = [];
+    for (const r of recordings) {
+      const m = computeSpiroMetrics(r.data, markerLines.a, markerLines.b);
+      if (!m) continue;
+      if (getBroncho(r.id) === "POST") {
+        postMetrics.push(m);
+        postNums.push(r.number);
+      } else {
+        preMetrics.push(m);
+        preNums.push(r.number);
       }
-      return null;
-    };
+    }
     return {
-      pef: Number.isFinite(pef) ? pef : null,
-      fvc: Number.isFinite(fvc) ? fvc : null,
-      fevA,
-      fevB,
-      deltaV: fevA !== null && fevB !== null ? Math.abs(fevB - fevA) : null,
-      fef25: Number.isFinite(fvc) ? flowAtVolume(0.25 * fvc) : null,
-      fef50: Number.isFinite(fvc) ? flowAtVolume(0.50 * fvc) : null,
-      fef75: Number.isFinite(fvc) ? flowAtVolume(0.75 * fvc) : null,
+      pre: {
+        avg: preMetrics.length > 0 ? averageMetrics(preMetrics) : null,
+        quality: computeQuality(preMetrics),
+        suggestions: computeSuggestions(preMetrics, preNums),
+      },
+      post: {
+        avg: postMetrics.length > 0 ? averageMetrics(postMetrics) : null,
+        quality: computeQuality(postMetrics),
+        suggestions: computeSuggestions(postMetrics, postNums),
+      },
     };
-  }, [currentCurve, markerLines]);
+  }, [recordings, markerLines, getBroncho]);
+  const groupAverages = useMemo(
+    () => ({ pre: groupAnalysis.pre.avg, post: groupAnalysis.post.avg }),
+    [groupAnalysis],
+  );
+
+  // Conjunto de números de prueba que la sugerencia recomienda descartar
+  // (para marcarlas visualmente en la lista).
+  const suggestedOutliers = useMemo(() => {
+    const set = new Set<number>();
+    for (const s of groupAnalysis.pre.suggestions) set.add(s.removeRecordingNumber);
+    for (const s of groupAnalysis.post.suggestions) set.add(s.removeRecordingNumber);
+    return set;
+  }, [groupAnalysis]);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -590,8 +888,11 @@ export function SpiroMonitor() {
       {/* Toolbar superior */}
       <Card className="mb-3 shrink-0">
         <CardContent className="flex flex-wrap items-center gap-3">
+          <Button onClick={handleOpenStudy} variant="ghost" disabled={isRecording}>
+            <FolderOpen className="h-4 w-4 mr-1" />Abrir estudio
+          </Button>
           <Button onClick={handleOpenCSV} variant="ghost" disabled={isRecording}>
-            <FolderOpen className="h-4 w-4 mr-1" />Abrir
+            <FolderOpen className="h-4 w-4 mr-1" />Abrir CSV
           </Button>
           <SerialSelect
             ports={serial.ports}
@@ -628,6 +929,9 @@ export function SpiroMonitor() {
                 <ul className="space-y-1 max-h-56 overflow-y-auto pr-1">
                   {recordings.map((r) => {
                     const isSelected = r.id === selectedRecId;
+                    const status = getBroncho(r.id);
+                    const isPost = status === "POST";
+                    const isOutlier = suggestedOutliers.has(r.number);
                     return (
                       <li
                         key={r.id}
@@ -635,26 +939,55 @@ export function SpiroMonitor() {
                         className={`flex items-center justify-between text-xs px-1.5 py-1 rounded transition-colors ${
                           isRecording ? "cursor-default" : "cursor-pointer"
                         } ${
-                          isSelected
-                            ? "bg-spiro-500/20 ring-1 ring-spiro-400"
-                            : "hover:bg-surface-800"
+                          !isSelected && isOutlier
+                            ? "ring-1 ring-red-500/40 hover:bg-surface-800"
+                            : !isSelected
+                              ? "hover:bg-surface-800"
+                              : ""
                         }`}
-                        title={isSelected ? "Click para deseleccionar" : "Click para activar esta curva"}
+                        style={
+                          isSelected
+                            ? {
+                                background: `${r.color}26`, // ~15% alpha
+                                boxShadow: `inset 0 0 0 1px ${r.color}`,
+                              }
+                            : undefined
+                        }
+                        title={
+                          isOutlier
+                            ? "Sugerencia: descartar para mejorar el grado de calidad"
+                            : isSelected
+                              ? "Click para deseleccionar"
+                              : "Click para activar esta curva"
+                        }
                       >
-                        <span className="flex items-center gap-2">
+                        <span className="flex items-center gap-2 min-w-0">
                           <span
-                            className="w-2.5 h-2.5 rounded-full"
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
                             style={{ backgroundColor: r.color }}
                           />
-                          Prueba {r.number}
+                          <span className="truncate">Prueba {r.number}</span>
                         </span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteRec(r.id); }}
-                          className="text-muted hover:text-red-400 transition-colors"
-                          title="Eliminar"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
+                        <span className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleBroncho(r.id); }}
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wide transition-colors ${
+                              isPost
+                                ? "bg-amber-500/20 text-amber-300 hover:bg-amber-500/30"
+                                : "bg-sky-500/20 text-sky-300 hover:bg-sky-500/30"
+                            }`}
+                            title="Click para alternar PRE/POST broncodilatador"
+                          >
+                            {status}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteRec(r.id); }}
+                            className="text-muted hover:text-red-400 transition-colors"
+                            title="Eliminar"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </span>
                       </li>
                     );
                   })}
@@ -665,9 +998,22 @@ export function SpiroMonitor() {
 
           <Card className="flex-1">
             <CardHeader>
-              {selectedRec
-                ? `Datos · Prueba ${selectedRec.number}`
-                : "Datos"}
+              <div className="flex items-center justify-between w-full">
+                <span>
+                  {selectedRec ? `Datos · Prueba ${selectedRec.number}` : "Datos"}
+                </span>
+                {selectedRec && (
+                  <span
+                    className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${
+                      getBroncho(selectedRec.id) === "POST"
+                        ? "bg-amber-500/20 text-amber-300"
+                        : "bg-sky-500/20 text-sky-300"
+                    }`}
+                  >
+                    {getBroncho(selectedRec.id)}
+                  </span>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               {measurements ? (
@@ -692,6 +1038,24 @@ export function SpiroMonitor() {
                   <span className="text-right">
                     {measurements.fef75 !== null ? `${measurements.fef75.toFixed(2)} L/s` : "—"}
                   </span>
+                  {(measurements.fif25 !== null ||
+                    measurements.fif50 !== null ||
+                    measurements.fif75 !== null) && (
+                    <>
+                      <span className="text-secondary">FIF25</span>
+                      <span className="text-right">
+                        {measurements.fif25 !== null ? `${measurements.fif25.toFixed(2)} L/s` : "—"}
+                      </span>
+                      <span className="text-secondary">FIF50</span>
+                      <span className="text-right">
+                        {measurements.fif50 !== null ? `${measurements.fif50.toFixed(2)} L/s` : "—"}
+                      </span>
+                      <span className="text-secondary">FIF75</span>
+                      <span className="text-right">
+                        {measurements.fif75 !== null ? `${measurements.fif75.toFixed(2)} L/s` : "—"}
+                      </span>
+                    </>
+                  )}
                   <span className="col-span-2 border-t border-surface-700 my-1" />
                   <span className="text-secondary" style={{ color: "#ef4444" }}>
                     FEV(A) {markerLines.a.toFixed(2)}s
@@ -709,17 +1073,75 @@ export function SpiroMonitor() {
                   <span className="text-right">
                     {measurements.deltaV !== null ? `${measurements.deltaV.toFixed(2)} L` : "—"}
                   </span>
-                  {measurements.fevA !== null && measurements.fvc !== null && measurements.fvc > 0 && (
-                    <>
-                      <span className="text-secondary">FEV(A)/FVC</span>
-                      <span className="text-right">
-                        {((measurements.fevA / measurements.fvc) * 100).toFixed(1)} %
-                      </span>
-                    </>
-                  )}
+                  <span className="text-secondary font-semibold">FEV(A)/FVC</span>
+                  <span className="text-right font-semibold">
+                    {measurements.fevAOverFvc !== null
+                      ? `${measurements.fevAOverFvc.toFixed(1)} %`
+                      : "—"}
+                  </span>
                 </div>
               ) : (
                 <p className="text-xs text-muted">Sin datos</p>
+              )}
+
+              {(groupAnalysis.pre.quality.nManeuvers > 0 ||
+                groupAnalysis.post.quality.nManeuvers > 0) && (
+                <div className="mt-3 pt-2 border-t border-surface-700">
+                  <p className="text-[10px] uppercase tracking-wide text-muted mb-1">
+                    Calidad ATS/ERS
+                  </p>
+                  <QualityBlock label="PRE" data={groupAnalysis.pre} accent="text-sky-300" />
+                  {groupAnalysis.post.quality.nManeuvers > 0 && (
+                    <QualityBlock label="POST" data={groupAnalysis.post} accent="text-amber-300" />
+                  )}
+                </div>
+              )}
+
+              {(groupAverages.pre || groupAverages.post) && (
+                <div className="mt-3 pt-2 border-t border-surface-700">
+                  <p className="text-[10px] uppercase tracking-wide text-muted mb-1">
+                    Promedios
+                  </p>
+                  <table className="w-full text-[10px] font-mono">
+                    <thead>
+                      <tr className="text-secondary">
+                        <th className="text-left font-normal pr-1"></th>
+                        <th className="text-right font-normal pr-1">PRE</th>
+                        <th className="text-right font-normal">POST</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <GroupRow
+                        label={`n`}
+                        pre={groupAverages.pre?.count ?? null}
+                        post={groupAverages.post?.count ?? null}
+                        digits={0}
+                      />
+                      <GroupRow
+                        label="PEF"
+                        pre={groupAverages.pre?.pef ?? null}
+                        post={groupAverages.post?.pef ?? null}
+                      />
+                      <GroupRow
+                        label="FVC"
+                        pre={groupAverages.pre?.fvc ?? null}
+                        post={groupAverages.post?.fvc ?? null}
+                      />
+                      <GroupRow
+                        label="FEV(A)"
+                        pre={groupAverages.pre?.fevA ?? null}
+                        post={groupAverages.post?.fevA ?? null}
+                      />
+                      <GroupRow
+                        label="FEV(A)/FVC"
+                        pre={groupAverages.pre?.fevAOverFvc ?? null}
+                        post={groupAverages.post?.fevAOverFvc ?? null}
+                        digits={1}
+                        suffix=" %"
+                      />
+                    </tbody>
+                  </table>
+                </div>
               )}
             </CardContent>
           </Card>
@@ -777,6 +1199,7 @@ export function SpiroMonitor() {
               <div ref={chartsHostRef} className="flex-1 min-h-0">
                 <SpiroCharts
                   current={currentCurve}
+                  currentColor={selectedRec?.color}
                   recordings={otherRecordings}
                   refLines={refLines}
                   onRefLinesChange={setRefLines}
@@ -805,7 +1228,21 @@ export function SpiroMonitor() {
                 <Eraser className="h-4 w-4 mr-1" />Borrar
               </Button>
               <Button onClick={handleSaveCSV} disabled={displayData.length === 0} variant="ghost">
-                <SaveIcon className="h-4 w-4 mr-1" />Guardar
+                <SaveIcon className="h-4 w-4 mr-1" />Guardar CSV
+              </Button>
+              <Button
+                onClick={handleOpenSaveStudy}
+                disabled={recordings.length === 0 || isRecording}
+                variant="secondary"
+              >
+                <FileJson className="h-4 w-4 mr-1" />Guardar estudio
+              </Button>
+              <Button
+                onClick={handleExportPDF}
+                disabled={recordings.length === 0 || isRecording}
+                variant="secondary"
+              >
+                <FileSignature className="h-4 w-4 mr-1" />PDF clínico
               </Button>
               <button
                 onClick={handleOpenReport}
@@ -821,6 +1258,14 @@ export function SpiroMonitor() {
       </div>
 
       <ReportPreview open={reportOpen} onClose={() => setReportOpen(false)} report={spiroReport} />
+      <SpiroSaveDialog
+        open={saveOpen}
+        onClose={() => setSaveOpen(false)}
+        onSave={handleSaveStudy}
+        initialPatient={studyPatient}
+        initialAnalysis={studyAnalysis}
+        recordingsCount={recordings.length}
+      />
     </div>
   );
 }
