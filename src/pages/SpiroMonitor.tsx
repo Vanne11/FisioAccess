@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Wind, Trash2, FileText, FolderOpen, Save as SaveIcon, Eraser, Play, RefreshCcw, FileJson, FileSignature } from "lucide-react";
+import { Wind, Trash2, FileText, FolderOpen, Eraser, Play, RefreshCcw, FileSignature, FlaskConical } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -94,11 +94,11 @@ function QualityBlock({
   const { quality, suggestions } = data;
   return (
     <div className="mb-2 last:mb-0">
-      <div className="flex items-center justify-between text-[10px]">
+      <div className="flex items-center justify-between text-xs">
         <span className={`font-semibold ${accent}`}>{label}</span>
         <span className="flex items-center gap-1.5">
           <span
-            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${gradeColorClasses(quality.grade)}`}
+            className={`px-1.5 py-0.5 rounded text-xs font-bold ${gradeColorClasses(quality.grade)}`}
           >
             {quality.grade}
           </span>
@@ -111,7 +111,7 @@ function QualityBlock({
         </span>
       </div>
       {suggestions.length > 0 && (
-        <ul className="mt-1 text-[10px] text-secondary space-y-0.5">
+        <ul className="mt-1 text-xs text-secondary space-y-0.5">
           {suggestions.map((s) => (
             <li key={s.removeRecordingNumber}>
               · Quitar Prueba {s.removeRecordingNumber} →{" "}
@@ -222,8 +222,6 @@ export function SpiroMonitor() {
   const [studyPatient, setStudyPatient] = useState<SpiroPatient | undefined>();
   const [studyAnalysis, setStudyAnalysis] = useState<SpiroAnalysis | undefined>();
   const [saveOpen, setSaveOpen] = useState(false);
-  // saveMode: 'save' → escribir JSON; 'pdf' → tras pedir paciente, exportar PDF
-  const [saveMode, setSaveMode] = useState<"save" | "pdf">("save");
   const workDir = useWorkspaceStore((s) => s.workDir);
   const reportConfig = useReportStore((s) => s.config);
 
@@ -465,6 +463,69 @@ export function SpiroMonitor() {
     }
   }, []);
 
+  // Genera una maniobra FVC sintética y la añade como prueba.
+  // Útil para probar UI/métricas/PDF sin hardware conectado.
+  // Cada llamada produce una curva ligeramente distinta para que las
+  // métricas ATS/ERS de repetibilidad y los promedios PRE/POST tengan
+  // variabilidad realista.
+  const handleSimulate = useCallback(() => {
+    if (recordings.length >= maxRecordings) return;
+    const dt = 0.02; // 50 Hz, igual que el firmware
+    const totalSec = recordingSecs;
+    const pefTarget = 6.0 + (Math.random() - 0.5) * 1.6;   // ~5.2–6.8 L/s
+    const fvcTarget = 3.8 + (Math.random() - 0.5) * 0.8;   // ~3.4–4.2 L
+    const tPef = 0.10 + Math.random() * 0.05;              // 0.10–0.15 s
+    const tau = 0.55 + Math.random() * 0.20;               // decaimiento espiratorio
+
+    const raw: SpiroPoint[] = [];
+    for (let t = 0; t <= totalSec + 1e-9; t += dt) {
+      let f: number;
+      if (t < tPef) {
+        f = pefTarget * (t / tPef);
+      } else {
+        f = pefTarget * Math.exp(-(t - tPef) / tau);
+      }
+      f += (Math.random() - 0.5) * 0.06; // ruido leve
+      raw.push({ t, p: 0, f, v: 0 });
+    }
+    // Integración de flujo → volumen
+    let acc = 0;
+    for (let i = 0; i < raw.length; i++) {
+      acc += raw[i].f * dt;
+      raw[i].v = acc;
+    }
+    // Escalar para que el volumen máximo coincida con FVC objetivo
+    const maxV = raw.reduce((m, p) => Math.max(m, p.v), 0);
+    if (maxV > 0) {
+      const scale = fvcTarget / maxV;
+      for (const p of raw) {
+        p.v *= scale;
+        p.f *= scale;
+        p.p = 0.08 * p.f; // presión proporcional aproximada (kPa)
+      }
+    }
+
+    let newId: number | null = null;
+    setRecordings((prev) => {
+      if (prev.length >= maxRecordings) return prev;
+      const num = prev.length + 1;
+      newId = nextRecIdRef.current++;
+      return [
+        ...prev,
+        {
+          id: newId,
+          number: num,
+          color: COLORS[(num - 1) % COLORS.length],
+          data: raw,
+        },
+      ];
+    });
+    if (newId !== null) setSelectedRecId(newId);
+    setDisplayData(raw);
+    setDisplayMode("frozen");
+    setLastCalMsg("Prueba sintética generada");
+  }, [recordings.length, maxRecordings, recordingSecs]);
+
   const handleClearAll = useCallback(() => {
     setRecordings([]);
     accumRef.current = [];
@@ -482,63 +543,6 @@ export function SpiroMonitor() {
     setRecordings((prev) => prev.filter((r) => r.id !== id));
     setSelectedRecId((cur) => (cur === id ? null : cur));
   }, []);
-
-  // ─── CSV ─────────────────────────────────────────────────────────
-  const handleSaveCSV = useCallback(async () => {
-    if (displayData.length === 0) return;
-    const lines = ["tiempo,presion,flujo,volumen"];
-    for (const p of displayData) {
-      lines.push(`${p.t.toFixed(3)},${p.p.toFixed(4)},${p.f.toFixed(4)},${p.v.toFixed(4)}`);
-    }
-    const csv = lines.join("\n") + "\n";
-    const now = new Date();
-    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-    const path = await saveDialog({
-      defaultPath: `spiro_${stamp}.csv`,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!path) return;
-    await writeFile(path, new TextEncoder().encode(csv));
-  }, [displayData]);
-
-  const handleOpenCSV = useCallback(async () => {
-    const path = await openDialog({
-      multiple: false,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!path || typeof path !== "string") return;
-    const text = await readTextFile(path);
-    const rows = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    if (rows.length < 2) return;
-    const header = rows[0].toLowerCase().split(",").map((s) => s.trim());
-    const idxT = header.indexOf("tiempo");
-    const idxP = header.indexOf("presion");
-    const idxF = header.indexOf("flujo");
-    const idxV = header.indexOf("volumen");
-    if (idxT < 0 || idxP < 0 || idxF < 0 || idxV < 0) {
-      setLastCalMsg("CSV inválido: faltan columnas tiempo,presion,flujo,volumen");
-      return;
-    }
-    const pts: SpiroPoint[] = [];
-    for (let i = 1; i < rows.length; i++) {
-      const c = rows[i].split(",");
-      const t = parseFloat(c[idxT]);
-      const p = parseFloat(c[idxP]);
-      const f = parseFloat(c[idxF]);
-      const v = parseFloat(c[idxV]);
-      if ([t, p, f, v].some((n) => Number.isNaN(n))) continue;
-      pts.push({ t, p, f, v });
-    }
-    if (serial.isConnected) await serial.disconnect();
-    pendingRecordRef.current = false;
-    pendingArmRef.current = false;
-    clearArmFallback();
-    recStartTMsRef.current = null;
-    accumRef.current = [];
-    setDisplayData(pts);
-    setSelectedRecId(null);
-    setDisplayMode("imported");
-  }, [serial]);
 
   // ─── Estudio (JSON con paciente + maniobras) ─────────────────────
   const captureChartsImage = useCallback((): string => {
@@ -567,43 +571,11 @@ export function SpiroMonitor() {
     return out.toDataURL("image/png");
   }, []);
 
-  const exportStudyAsPDF = useCallback(
+  // Guarda el estudio en JSON y, en paralelo, un PDF clínico con el mismo
+  // nombre base. El usuario elige la ruta del .json; el .pdf se escribe
+  // junto, reemplazando la extensión.
+  const handleSave = useCallback(
     async (patient: SpiroPatient, analysis: SpiroAnalysis) => {
-      const study = buildStudy({
-        patient,
-        analysis,
-        recordings,
-        bronchodilatorByRec: bronchoByRec,
-        refLines,
-        markerLines,
-      });
-      const signalImage = captureChartsImage();
-      const pdf = generateSpiroPDF(study, {
-        config: reportConfig,
-        signalImage,
-      });
-      const base = studyFilename(patient, study.timestamp).replace(/\.json$/, ".pdf");
-      const defaultPath = workDir ? `${workDir}/${base}` : base;
-      const path = await saveDialog({
-        defaultPath,
-        filters: [{ name: "PDF", extensions: ["pdf"] }],
-      });
-      if (!path) return;
-      const bytes = pdf.output("arraybuffer");
-      await writeFile(path, new Uint8Array(bytes));
-      setStudyPatient(patient);
-      setStudyAnalysis(analysis);
-      setLastCalMsg(`PDF clínico guardado en ${path}`);
-    },
-    [recordings, bronchoByRec, refLines, markerLines, workDir, reportConfig, captureChartsImage],
-  );
-
-  const handleSaveStudy = useCallback(
-    async (patient: SpiroPatient, analysis: SpiroAnalysis) => {
-      if (saveMode === "pdf") {
-        await exportStudyAsPDF(patient, analysis);
-        return;
-      }
       const study = buildStudy({
         patient,
         analysis,
@@ -620,30 +592,40 @@ export function SpiroMonitor() {
         filters: [{ name: "Estudio espirometría", extensions: ["json"] }],
       });
       if (!path) return;
+      const pdfPath = path.replace(/\.json$/i, "") + ".pdf";
+
       await writeFile(path, new TextEncoder().encode(json));
+
+      const signalImage = captureChartsImage();
+      const pdf = generateSpiroPDF(study, { config: reportConfig, signalImage });
+      const bytes = pdf.output("arraybuffer");
+      await writeFile(pdfPath, new Uint8Array(bytes));
+
       setStudyPatient(patient);
       setStudyAnalysis(analysis);
-      setLastCalMsg(`Estudio guardado en ${path}`);
+      setLastCalMsg(`Estudio guardado: ${path}  +  ${pdfPath}`);
     },
-    [saveMode, exportStudyAsPDF, recordings, bronchoByRec, refLines, markerLines, workDir],
+    [recordings, bronchoByRec, refLines, markerLines, workDir, reportConfig, captureChartsImage],
   );
 
-  const handleExportPDF = useCallback(() => {
-    setSaveMode("pdf");
+  const handleOpenSave = useCallback(() => {
     setSaveOpen(true);
   }, []);
 
-  const handleOpenSaveStudy = useCallback(() => {
-    setSaveMode("save");
-    setSaveOpen(true);
-  }, []);
-
-  const handleOpenStudy = useCallback(async () => {
+  // Abrir unificado: acepta .json (estudio completo) o .csv (curva cruda
+  // que se agrega como una prueba más a la lista).
+  const handleOpen = useCallback(async () => {
     const path = await openDialog({
       multiple: false,
-      filters: [{ name: "Estudio espirometría", extensions: ["json"] }],
+      filters: [
+        { name: "Estudio o CSV", extensions: ["json", "csv"] },
+        { name: "Estudio espirometría", extensions: ["json"] },
+        { name: "CSV", extensions: ["csv"] },
+      ],
     });
     if (!path || typeof path !== "string") return;
+    const isCsv = /\.csv$/i.test(path);
+
     let text: string;
     try {
       text = await readTextFile(path);
@@ -651,6 +633,66 @@ export function SpiroMonitor() {
       setLastCalMsg(`No se pudo leer: ${e}`);
       return;
     }
+
+    if (isCsv) {
+      const rows = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      if (rows.length < 2) {
+        setLastCalMsg("CSV vacío");
+        return;
+      }
+      const header = rows[0].toLowerCase().split(",").map((s) => s.trim());
+      const idxT = header.indexOf("tiempo");
+      const idxP = header.indexOf("presion");
+      const idxF = header.indexOf("flujo");
+      const idxV = header.indexOf("volumen");
+      if (idxT < 0 || idxP < 0 || idxF < 0 || idxV < 0) {
+        setLastCalMsg("CSV inválido: faltan columnas tiempo,presion,flujo,volumen");
+        return;
+      }
+      const pts: SpiroPoint[] = [];
+      for (let i = 1; i < rows.length; i++) {
+        const c = rows[i].split(",");
+        const t = parseFloat(c[idxT]);
+        const p = parseFloat(c[idxP]);
+        const f = parseFloat(c[idxF]);
+        const v = parseFloat(c[idxV]);
+        if ([t, p, f, v].some((n) => Number.isNaN(n))) continue;
+        pts.push({ t, p, f, v });
+      }
+      if (pts.length === 0) {
+        setLastCalMsg("CSV sin filas válidas");
+        return;
+      }
+      if (serial.isConnected) await serial.disconnect();
+      pendingRecordRef.current = false;
+      pendingArmRef.current = false;
+      clearArmFallback();
+      recStartTMsRef.current = null;
+      accumRef.current = [];
+
+      let newId: number | null = null;
+      setRecordings((prev) => {
+        if (prev.length >= maxRecordingsRef.current) return prev;
+        const num = prev.length + 1;
+        newId = nextRecIdRef.current++;
+        return [
+          ...prev,
+          {
+            id: newId,
+            number: num,
+            color: COLORS[(num - 1) % COLORS.length],
+            data: pts,
+          },
+        ];
+      });
+      if (newId !== null) setSelectedRecId(newId);
+      setDisplayData(pts);
+      setDisplayMode("imported");
+      setLastCalMsg(`CSV cargado como prueba (${pts.length} muestras)`);
+      return;
+    }
+
+    // JSON: estudio completo
     let study;
     try {
       study = studyFromPythonJSON(text);
@@ -666,7 +708,6 @@ export function SpiroMonitor() {
     accumRef.current = [];
     setDisplayData([]);
     setDisplayMode("imported");
-    // Restaurar maniobras conservando los ids internos
     const newBroncho: Record<number, BronchodilatorStatus> = {};
     const newRecordings: SpiroRecording[] = study.recordings.map((r) => {
       const id = nextRecIdRef.current++;
@@ -680,7 +721,6 @@ export function SpiroMonitor() {
     });
     setRecordings(newRecordings);
     setBronchoByRec(newBroncho);
-    // Restaurar posiciones de líneas (usamos las del primer entry)
     const firstLp = Object.values(study.linePositions)[0];
     if (firstLp) {
       setRefLines({ pef: firstLp.refPef, fvc: firstLp.refFvc });
@@ -888,11 +928,8 @@ export function SpiroMonitor() {
       {/* Toolbar superior */}
       <Card className="mb-3 shrink-0">
         <CardContent className="flex flex-wrap items-center gap-3">
-          <Button onClick={handleOpenStudy} variant="ghost" disabled={isRecording}>
-            <FolderOpen className="h-4 w-4 mr-1" />Abrir estudio
-          </Button>
-          <Button onClick={handleOpenCSV} variant="ghost" disabled={isRecording}>
-            <FolderOpen className="h-4 w-4 mr-1" />Abrir CSV
+          <Button onClick={handleOpen} variant="ghost" disabled={isRecording}>
+            <FolderOpen className="h-4 w-4 mr-1" />Abrir (.json / .csv)
           </Button>
           <SerialSelect
             ports={serial.ports}
@@ -1086,8 +1123,8 @@ export function SpiroMonitor() {
 
               {(groupAnalysis.pre.quality.nManeuvers > 0 ||
                 groupAnalysis.post.quality.nManeuvers > 0) && (
-                <div className="mt-3 pt-2 border-t border-surface-700">
-                  <p className="text-[10px] uppercase tracking-wide text-muted mb-1">
+                <div className="mt-3 pt-3 border-t border-surface-700">
+                  <p className="text-sm font-medium text-secondary mb-2">
                     Calidad ATS/ERS
                   </p>
                   <QualityBlock label="PRE" data={groupAnalysis.pre} accent="text-sky-300" />
@@ -1098,11 +1135,11 @@ export function SpiroMonitor() {
               )}
 
               {(groupAverages.pre || groupAverages.post) && (
-                <div className="mt-3 pt-2 border-t border-surface-700">
-                  <p className="text-[10px] uppercase tracking-wide text-muted mb-1">
+                <div className="mt-3 pt-3 border-t border-surface-700">
+                  <p className="text-sm font-medium text-secondary mb-2">
                     Promedios
                   </p>
-                  <table className="w-full text-[10px] font-mono">
+                  <table className="w-full text-xs font-mono">
                     <thead>
                       <tr className="text-secondary">
                         <th className="text-left font-normal pr-1"></th>
@@ -1221,28 +1258,27 @@ export function SpiroMonitor() {
               <Button onClick={handleStart} disabled={!canStart} variant="primary">
                 <Play className="h-4 w-4 mr-1" />Iniciar
               </Button>
+              <Button
+                onClick={handleSimulate}
+                disabled={isRecording || recordings.length >= maxRecordings}
+                variant="ghost"
+                title="Generar una maniobra sintética para probar el sistema sin hardware"
+              >
+                <FlaskConical className="h-4 w-4 mr-1" />Simular
+              </Button>
               <Button onClick={handleCalibrate} disabled={!canCalibrate} variant="secondary">
                 <RefreshCcw className="h-4 w-4 mr-1" />Calibrar
               </Button>
               <Button onClick={handleClearAll} disabled={!canClear} variant="ghost">
                 <Eraser className="h-4 w-4 mr-1" />Borrar
               </Button>
-              <Button onClick={handleSaveCSV} disabled={displayData.length === 0} variant="ghost">
-                <SaveIcon className="h-4 w-4 mr-1" />Guardar CSV
-              </Button>
               <Button
-                onClick={handleOpenSaveStudy}
+                onClick={handleOpenSave}
                 disabled={recordings.length === 0 || isRecording}
                 variant="secondary"
+                title="Guarda el estudio en .json y un PDF clínico con el mismo nombre"
               >
-                <FileJson className="h-4 w-4 mr-1" />Guardar estudio
-              </Button>
-              <Button
-                onClick={handleExportPDF}
-                disabled={recordings.length === 0 || isRecording}
-                variant="secondary"
-              >
-                <FileSignature className="h-4 w-4 mr-1" />PDF clínico
+                <FileSignature className="h-4 w-4 mr-1" />Guardar estudio + PDF
               </Button>
               <button
                 onClick={handleOpenReport}
@@ -1261,7 +1297,7 @@ export function SpiroMonitor() {
       <SpiroSaveDialog
         open={saveOpen}
         onClose={() => setSaveOpen(false)}
-        onSave={handleSaveStudy}
+        onSave={handleSave}
         initialPatient={studyPatient}
         initialAnalysis={studyAnalysis}
         recordingsCount={recordings.length}

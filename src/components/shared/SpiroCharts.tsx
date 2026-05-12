@@ -403,6 +403,8 @@ export function SpiroCharts({
 
   const containerWidth = containerSize.w;
   const effectiveHeight = height ?? Math.max(minHeight, containerSize.h);
+  const TITLE_H = 20;
+  const chartHeight = Math.max(80, effectiveHeight - TITLE_H);
 
   const vtWidth = Math.max(200, Math.floor((containerWidth * 2) / 3) - 4);
   const fvWidth = Math.max(160, containerWidth - vtWidth - 8);
@@ -799,30 +801,66 @@ export function SpiroCharts({
     >
       {containerWidth > 0 && (
         <>
-          <ChartPanel
-            width={vtWidth}
-            height={effectiveHeight}
-            draw={drawVT}
-            onMouseDown={handleVTDown}
-            onMouseMove={handleVTMove}
-            onMouseUp={handleVTUp}
-            onWheel={handleVTWheel}
-            onDoubleClick={handleVTDoubleClick}
-            cursor={vtCursor}
-            canvasRef={vtCanvasRef}
-          />
-          <ChartPanel
-            width={fvWidth}
-            height={effectiveHeight}
-            draw={drawFV}
-            onMouseDown={handleFVDown}
-            onMouseMove={handleFVMove}
-            onMouseUp={handleFVUp}
-            onWheel={handleFVWheel}
-            onDoubleClick={handleFVDoubleClick}
-            cursor={cursor}
-            canvasRef={fvCanvasRef}
-          />
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            <div
+              style={{
+                height: TITLE_H,
+                width: vtWidth,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                color: "var(--color-text-secondary, #94a3b8)",
+              }}
+            >
+              Volumen / Tiempo
+            </div>
+            <ChartPanel
+              width={vtWidth}
+              height={chartHeight}
+              draw={drawVT}
+              onMouseDown={handleVTDown}
+              onMouseMove={handleVTMove}
+              onMouseUp={handleVTUp}
+              onWheel={handleVTWheel}
+              onDoubleClick={handleVTDoubleClick}
+              cursor={vtCursor}
+              canvasRef={vtCanvasRef}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            <div
+              style={{
+                height: TITLE_H,
+                width: fvWidth,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                color: "var(--color-text-secondary, #94a3b8)",
+              }}
+            >
+              Flujo / Volumen
+            </div>
+            <ChartPanel
+              width={fvWidth}
+              height={chartHeight}
+              draw={drawFV}
+              onMouseDown={handleFVDown}
+              onMouseMove={handleFVMove}
+              onMouseUp={handleFVUp}
+              onWheel={handleFVWheel}
+              onDoubleClick={handleFVDoubleClick}
+              cursor={cursor}
+              canvasRef={fvCanvasRef}
+            />
+          </div>
         </>
       )}
       {isZoomed && (
