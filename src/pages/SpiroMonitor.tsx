@@ -14,7 +14,6 @@ import {
   SpiroCharts,
   type SpiroPoint,
   type SpiroRecording,
-  type SpiroRefLines,
   type SpiroMarkerLines,
 } from "@/components/shared/SpiroCharts";
 import { ReportPreview, type ReportData } from "@/components/shared/ReportPreview";
@@ -71,7 +70,9 @@ const COLORS = [
   "#fb923c", "#22c55e", "#0ea5e9", "#d946ef", "#65a30d",
 ];
 
-const DEFAULT_REF_LINES: SpiroRefLines = { pef: 1.5, fvc: 4.0 };
+// refLines se mantiene en el formato de estudio JSON con un valor fijo
+// (la gráfica calcula PEF/FVC automáticamente desde la curva).
+const STUDY_REF_LINES = { pef: 1.5, fvc: 4.0 };
 const DEFAULT_MARKER_LINES: SpiroMarkerLines = { a: 1.0, b: 2.0 };
 
 const LS_MAX_RECORDINGS = "spiro.maxRecordings";
@@ -177,7 +178,6 @@ export function SpiroMonitor() {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("idle");
   const [displayData, setDisplayData] = useState<SpiroPoint[]>([]);
   const [recordings, setRecordings] = useState<SpiroRecording[]>([]);
-  const [refLines, setRefLines] = useState<SpiroRefLines>(DEFAULT_REF_LINES);
   const [lastCalMsg, setLastCalMsg] = useState<string>("");
   const [elapsed, setElapsed] = useState(0);
 
@@ -472,23 +472,55 @@ export function SpiroMonitor() {
     if (recordings.length >= maxRecordings) return;
     const dt = 0.02; // 50 Hz, igual que el firmware
     const totalSec = recordingSecs;
+    // Reparto del tiempo: ~50% espiración, breve plateau, ~45% inspiración.
+    // Si recordingSecs es muy corto, se respetan las proporciones.
+    const expSec = totalSec * 0.50;
+    const plateauSec = totalSec * 0.05;
+    const inspSec = totalSec - expSec - plateauSec;
+
     const pefTarget = 6.0 + (Math.random() - 0.5) * 1.6;   // ~5.2–6.8 L/s
     const fvcTarget = 3.8 + (Math.random() - 0.5) * 0.8;   // ~3.4–4.2 L
-    const tPef = 0.10 + Math.random() * 0.05;              // 0.10–0.15 s
-    const tau = 0.55 + Math.random() * 0.20;               // decaimiento espiratorio
+    const pifTarget = 4.0 + (Math.random() - 0.5) * 1.2;   // pico inspiratorio
+    const tPef = 0.10 + Math.random() * 0.05;
+    const tauExp = 0.55 + Math.random() * 0.20;
+    const tPif = 0.35 + Math.random() * 0.15;              // tiempo al PIF
+    const tauInsp = 0.65 + Math.random() * 0.20;
 
     const raw: SpiroPoint[] = [];
-    for (let t = 0; t <= totalSec + 1e-9; t += dt) {
+
+    // Fase 1: espiración (0 → expSec)
+    for (let t = 0; t <= expSec + 1e-9; t += dt) {
       let f: number;
       if (t < tPef) {
         f = pefTarget * (t / tPef);
       } else {
-        f = pefTarget * Math.exp(-(t - tPef) / tau);
+        f = pefTarget * Math.exp(-(t - tPef) / tauExp);
       }
-      f += (Math.random() - 0.5) * 0.06; // ruido leve
+      f += (Math.random() - 0.5) * 0.06;
       raw.push({ t, p: 0, f, v: 0 });
     }
-    // Integración de flujo → volumen
+
+    // Fase 2: plateau (flujo cerca de 0)
+    for (let t = expSec + dt; t <= expSec + plateauSec + 1e-9; t += dt) {
+      const f = (Math.random() - 0.5) * 0.05;
+      raw.push({ t, p: 0, f, v: 0 });
+    }
+
+    // Fase 3: inspiración (flujo negativo, sube y luego decae)
+    const tInspStart = expSec + plateauSec;
+    for (let t = tInspStart + dt; t <= totalSec + 1e-9; t += dt) {
+      const dtRel = t - tInspStart;
+      let f: number;
+      if (dtRel < tPif) {
+        f = -pifTarget * (dtRel / tPif);
+      } else {
+        f = -pifTarget * Math.exp(-(dtRel - tPif) / tauInsp);
+      }
+      f += (Math.random() - 0.5) * 0.06;
+      raw.push({ t, p: 0, f, v: 0 });
+    }
+
+    // Integración trapezoidal: V(t) = ∫f dt
     let acc = 0;
     for (let i = 0; i < raw.length; i++) {
       acc += raw[i].f * dt;
@@ -501,7 +533,7 @@ export function SpiroMonitor() {
       for (const p of raw) {
         p.v *= scale;
         p.f *= scale;
-        p.p = 0.08 * p.f; // presión proporcional aproximada (kPa)
+        p.p = 0.08 * p.f;
       }
     }
 
@@ -581,7 +613,7 @@ export function SpiroMonitor() {
         analysis,
         recordings,
         bronchodilatorByRec: bronchoByRec,
-        refLines,
+        refLines: STUDY_REF_LINES,
         markerLines,
       });
       const json = studyToPythonJSON(study);
@@ -605,7 +637,7 @@ export function SpiroMonitor() {
       setStudyAnalysis(analysis);
       setLastCalMsg(`Estudio guardado: ${path}  +  ${pdfPath}`);
     },
-    [recordings, bronchoByRec, refLines, markerLines, workDir, reportConfig, captureChartsImage],
+    [recordings, bronchoByRec, markerLines, workDir, reportConfig, captureChartsImage],
   );
 
   const handleOpenSave = useCallback(() => {
@@ -723,7 +755,6 @@ export function SpiroMonitor() {
     setBronchoByRec(newBroncho);
     const firstLp = Object.values(study.linePositions)[0];
     if (firstLp) {
-      setRefLines({ pef: firstLp.refPef, fvc: firstLp.refFvc });
       setMarkerLines({ a: firstLp.markerA, b: firstLp.markerB });
     }
     setStudyPatient(study.patient);
@@ -798,16 +829,14 @@ export function SpiroMonitor() {
         ...(displayData.length > 0
           ? [
               { label: "PEF (curva actual)", value: peakFlow.toFixed(2), unit: "L/s" },
-              { label: "FVC visual (curva actual)", value: peakVol.toFixed(2), unit: "L" },
-              { label: "PEF (referencia)", value: refLines.pef.toFixed(2), unit: "L" },
-              { label: "FVC (referencia)", value: refLines.fvc.toFixed(2), unit: "L" },
+              { label: "FVC (curva actual)", value: peakVol.toFixed(2), unit: "L" },
             ]
           : []),
       ],
       signalImage: reportImage,
       signalLabel: "Curvas Volumen/Tiempo y Flujo/Volumen",
     };
-  }, [recordings.length, displayData, refLines, reportImage]);
+  }, [recordings.length, displayData, reportImage]);
 
   // ─── Status badge ────────────────────────────────────────────────
   const status = ((): "disconnected" | "connected" | "calibrated" | "testing" => {
@@ -1238,8 +1267,6 @@ export function SpiroMonitor() {
                   current={currentCurve}
                   currentColor={selectedRec?.color}
                   recordings={otherRecordings}
-                  refLines={refLines}
-                  onRefLinesChange={setRefLines}
                   markerLines={markerLines}
                   onMarkerLinesChange={setMarkerLines}
                 />

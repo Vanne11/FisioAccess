@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useMemo, useState } from "react";
 
 /** Punto crudo de una espirometría: tiempo relativo en segundos. */
 export interface SpiroPoint {
@@ -15,10 +15,11 @@ export interface SpiroRecording {
   data: SpiroPoint[];
 }
 
+/** Mantenido para compatibilidad con el formato de estudio en disco —
+ *  el chart F/V ya no usa estos valores: PEF y FVC se calculan
+ *  automáticamente desde la curva. */
 export interface SpiroRefLines {
-  /** Volumen (L) en el que está PEF. */
   pef: number;
-  /** Volumen (L) en el que está FVC. */
   fvc: number;
 }
 
@@ -34,12 +35,10 @@ export interface SpiroMarkerLines {
 interface SpiroChartsProps {
   current: SpiroPoint[];
   recordings: SpiroRecording[];
-  refLines: SpiroRefLines;
-  onRefLinesChange: (next: SpiroRefLines) => void;
   markerLines: SpiroMarkerLines;
   onMarkerLinesChange: (next: SpiroMarkerLines) => void;
   /** Color de la curva actual; si se omite se usan los defaults
-   *  (azul para V-t, rojo para F-V). Útil para mostrar la curva
+   *  (azul para V-t, verde para F-V). Útil para mostrar la curva
    *  seleccionada con el mismo color de su entrada en la lista. */
   currentColor?: string;
   /** Si se omite, el componente observa el alto disponible del
@@ -49,16 +48,18 @@ interface SpiroChartsProps {
   minHeight?: number;
 }
 
-// Rangos fijos por estándar médico (no autoscale)
-const VT_T_MIN = 0;
-const VT_T_MAX = 17;
-const VT_V_MIN = -4;
-const VT_V_MAX = 6;
+// Rangos de fallback cuando no hay datos (idle). Una vez hay muestras,
+// los ejes se recalculan por autoscale para que cualquier curva
+// (incluyendo marcadores y líneas de referencia) entre completa.
+const VT_T_FALLBACK_MIN = 0;
+const VT_T_FALLBACK_MAX = 6;
+const VT_V_FALLBACK_MIN = -1;
+const VT_V_FALLBACK_MAX = 5;
 
-const FV_V_MIN = 0;
-const FV_V_MAX = 8;
-const FV_F_MIN = -8;
-const FV_F_MAX = 10;
+const FV_V_FALLBACK_MIN = 0;
+const FV_V_FALLBACK_MAX = 5;
+const FV_F_FALLBACK_MIN = -2;
+const FV_F_FALLBACK_MAX = 8;
 
 const MARGIN_LEFT = 44;
 const MARGIN_BOTTOM = 26;
@@ -66,14 +67,18 @@ const MARGIN_TOP = 8;
 const MARGIN_RIGHT = 8;
 
 const COLOR_CURRENT_VT = "#3b82f6"; // azul
-const COLOR_CURRENT_FV = "#ef4444"; // rojo
-const COLOR_REF_DRAG = "#a855f7";
-const COLOR_REF_AUTO = "#94a3b8";
+const COLOR_CURRENT_FV = "#10b981"; // verde (lazo F/V clínico)
+const COLOR_FEF = "#3b82f6";        // azul — drop lines FEF (espiración)
+const COLOR_FIF = "#ef4444";        // rojo — drop lines FIF (inspiración)
+const COLOR_ANCHOR = "#fb923c";     // naranja — anclas PEF y FVC
+const COLOR_EXP_LABEL = "#3b82f6";
+const COLOR_INSP_LABEL = "#ef4444";
 const COLOR_MARKER_A = "#ef4444"; // rojo
 const COLOR_MARKER_B = "#10b981"; // verde
 const COLOR_MARKER_DIFF = "#22d3ee"; // cyan
 
 const REF_GRAB_PX = 6;
+const FV_GRAB_PX = 10;
 
 /** Interpola linealmente el volumen `v` en la curva al tiempo `x`.
  *  Devuelve null si `x` cae fuera del rango de la curva. */
@@ -90,9 +95,9 @@ function yAtX(pts: SpiroPoint[], x: number): number | null {
   return p0.v + (p1.v - p0.v) * t;
 }
 
-/** Flujo en la curva cuando el volumen alcanza por primera vez `target`.
- *  Devuelve null si la curva nunca llega a ese volumen. Coincide con
- *  la lógica usada en lib/spiro/metrics.flowAtVolume. */
+/** Flujo en la curva cuando el volumen alcanza por primera vez `target`
+ *  (rama espiratoria — volumen creciente). Devuelve null si la curva
+ *  nunca llega a ese volumen. */
 function flowAtV(pts: SpiroPoint[], target: number): number | null {
   for (let i = 1; i < pts.length; i++) {
     const v0 = pts[i - 1].v;
@@ -103,6 +108,37 @@ function flowAtV(pts: SpiroPoint[], target: number): number | null {
     }
   }
   return null;
+}
+
+/** Flujo (con signo, negativo) en la rama inspiratoria al cruzar el
+ *  volumen `target`. Busca cruces descendentes después del pico de FVC. */
+function inspFlowAtV(pts: SpiroPoint[], target: number): number | null {
+  if (pts.length < 2) return null;
+  let peakIdx = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].v > pts[peakIdx].v) peakIdx = i;
+  }
+  if (peakIdx >= pts.length - 1) return null;
+  for (let i = peakIdx + 1; i < pts.length; i++) {
+    const v0 = pts[i - 1].v;
+    const v1 = pts[i].v;
+    if (v0 >= target && v1 <= target && v0 !== v1) {
+      const t = (v0 - target) / (v0 - v1);
+      const f = pts[i - 1].f + (pts[i].f - pts[i - 1].f) * t;
+      if (f < 0) return f;
+    }
+  }
+  return null;
+}
+
+/** Índice del punto de máximo flujo (PEF) de la rama espiratoria. */
+function peakExpIndex(pts: SpiroPoint[]): number | null {
+  if (pts.length === 0) return null;
+  let idx = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].f > pts[idx].f) idx = i;
+  }
+  return pts[idx].f > 0 ? idx : null;
 }
 
 interface VtView {
@@ -117,31 +153,12 @@ interface FvView {
   fMin: number;
   fMax: number;
 }
-const DEFAULT_VT_VIEW: VtView = { tMin: VT_T_MIN, tMax: VT_T_MAX, vMin: VT_V_MIN, vMax: VT_V_MAX };
-const DEFAULT_FV_VIEW: FvView = { vMin: FV_V_MIN, vMax: FV_V_MAX, fMin: FV_F_MIN, fMax: FV_F_MAX };
 
-const MIN_SPAN_T = 0.5; // s
-const MIN_SPAN_V = 0.5; // L
-const MIN_SPAN_F = 1.0; // L/s
-const MAX_SPAN_T = 30;
-const MAX_SPAN_V = 20;
-const MAX_SPAN_F = 30;
-
-function zoomRange(
-  min: number,
-  max: number,
-  center: number,
-  factor: number,
-  minSpan: number,
-  maxSpan: number,
-): [number, number] {
-  let span = (max - min) * factor;
-  span = Math.max(minSpan, Math.min(maxSpan, span));
-  const ratio = (center - min) / (max - min);
-  let nMin = center - span * ratio;
-  let nMax = center + span * (1 - ratio);
-  return [nMin, nMax];
-}
+/** Padding mínimo para que un valor extremo no quede pegado al borde. */
+const MIN_PAD_T = 0.3;
+const MIN_PAD_V = 0.25;
+const MIN_PAD_F = 0.5;
+const PAD_FRAC = 0.08;
 
 function themeColors() {
   const s = getComputedStyle(document.documentElement);
@@ -352,15 +369,9 @@ function ChartPanel({ width, height, draw, onMouseDown, onMouseMove, onMouseUp, 
   );
 }
 
-export interface SpiroChartsHandle {
-  resetZoom: () => void;
-}
-
 export function SpiroCharts({
   current,
   recordings,
-  refLines,
-  onRefLinesChange,
   markerLines,
   onMarkerLinesChange,
   currentColor,
@@ -372,24 +383,129 @@ export function SpiroCharts({
   const fvCanvasRef = useRef<HTMLCanvasElement>(null);
   const vtCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Viewports independientes para zoom/pan; no modifican datos.
-  const [vtView, setVtView] = useState<VtView>(DEFAULT_VT_VIEW);
-  const [fvView, setFvView] = useState<FvView>(DEFAULT_FV_VIEW);
-  const resetZoom = useCallback(() => {
-    setVtView(DEFAULT_VT_VIEW);
-    setFvView(DEFAULT_FV_VIEW);
-  }, []);
-  const isVtZoomed =
-    vtView.tMin !== DEFAULT_VT_VIEW.tMin ||
-    vtView.tMax !== DEFAULT_VT_VIEW.tMax ||
-    vtView.vMin !== DEFAULT_VT_VIEW.vMin ||
-    vtView.vMax !== DEFAULT_VT_VIEW.vMax;
-  const isFvZoomed =
-    fvView.vMin !== DEFAULT_FV_VIEW.vMin ||
-    fvView.vMax !== DEFAULT_FV_VIEW.vMax ||
-    fvView.fMin !== DEFAULT_FV_VIEW.fMin ||
-    fvView.fMax !== DEFAULT_FV_VIEW.fMax;
-  const isZoomed = isVtZoomed || isFvZoomed;
+  // Viewports derivados por autoscale: se recalculan en cada render según
+  // datos + marcadores + líneas de referencia, garantizando que las
+  // curvas siempre entren completas en el recuadro. Sin estado mutable
+  // → no se "descuadra" con interacciones del usuario.
+  const allCurves = useMemo(() => {
+    const list: SpiroPoint[][] = [];
+    if (current.length > 0) list.push(current);
+    for (const r of recordings) if (r.data.length > 0) list.push(r.data);
+    return list;
+  }, [current, recordings]);
+
+  const vtView = useMemo<VtView>(() => {
+    let tMin = Infinity;
+    let tMax = -Infinity;
+    let vMin = Infinity;
+    let vMax = -Infinity;
+    for (const pts of allCurves) {
+      for (const p of pts) {
+        if (p.t < tMin) tMin = p.t;
+        if (p.t > tMax) tMax = p.t;
+        if (p.v < vMin) vMin = p.v;
+        if (p.v > vMax) vMax = p.v;
+      }
+    }
+    // Si no hay datos, valores de fallback
+    if (!Number.isFinite(tMin)) {
+      tMin = VT_T_FALLBACK_MIN;
+      tMax = VT_T_FALLBACK_MAX;
+      vMin = VT_V_FALLBACK_MIN;
+      vMax = VT_V_FALLBACK_MAX;
+    }
+    // Marcadores A/B deben entrar siempre
+    tMin = Math.min(tMin, markerLines.a, markerLines.b, 0);
+    tMax = Math.max(tMax, markerLines.a, markerLines.b);
+    // Volumen siempre incluye 0 como referencia visual
+    vMin = Math.min(vMin, 0);
+    vMax = Math.max(vMax, 0);
+    const padT = Math.max(MIN_PAD_T, (tMax - tMin) * PAD_FRAC);
+    const padV = Math.max(MIN_PAD_V, (vMax - vMin) * PAD_FRAC);
+    return { tMin: tMin - padT, tMax: tMax + padT, vMin: vMin - padV, vMax: vMax + padV };
+  }, [allCurves, markerLines]);
+
+  // Anclas PEF y FVC arrastrables horizontalmente. Para que TODAS las
+  // líneas se muevan en paralelo cuando movés FVC, PEF se guarda como
+  // ratio (PEF/FVC), igual que las FEF/FIF 25/50/75 %. Así, mover FVC
+  // escala automáticamente PEF y las 6 drop-lines manteniendo las
+  // proporciones. Mover PEF re-establece su ratio para futuros movs.
+  type FvKey = "pef" | "fvc";
+  const autoFvc = useMemo(() => {
+    if (current.length === 0) return null;
+    const v = current.reduce((m, p) => (p.v > m ? p.v : m), -Infinity);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  }, [current]);
+  const autoPefVol = useMemo(() => {
+    const i = peakExpIndex(current);
+    return i !== null ? current[i].v : null;
+  }, [current]);
+  const [fvcOverride, setFvcOverride] = useState<number | null>(null);
+  const [pefRatioOverride, setPefRatioOverride] = useState<number | null>(null);
+  useEffect(() => {
+    setFvcOverride(null);
+    setPefRatioOverride(null);
+  }, [current]);
+
+  const fvcVol = fvcOverride ?? autoFvc ?? 0;
+  const hasFvc = fvcVol > 0;
+  const autoPefRatio =
+    autoPefVol !== null && autoFvc !== null && autoFvc > 0
+      ? autoPefVol / autoFvc
+      : null;
+  const pefRatio = pefRatioOverride ?? autoPefRatio;
+  const pefVol = pefRatio !== null ? pefRatio * fvcVol : 0;
+  const pefFlow = autoPefVol !== null ? (flowAtV(current, pefVol) ?? 0) : 0;
+  const hasPef = autoPefVol !== null && hasFvc;
+  const fefVols = {
+    fef25: 0.25 * fvcVol,
+    fef50: 0.50 * fvcVol,
+    fef75: 0.75 * fvcVol,
+  };
+  const fifVols = {
+    fif25: 0.25 * fvcVol,
+    fif50: 0.50 * fvcVol,
+    fif75: 0.75 * fvcVol,
+  };
+
+  const fvView = useMemo<FvView>(() => {
+    let vMin = Infinity;
+    let vMax = -Infinity;
+    let fMin = Infinity;
+    let fMax = -Infinity;
+    for (const pts of allCurves) {
+      for (const p of pts) {
+        if (p.v < vMin) vMin = p.v;
+        if (p.v > vMax) vMax = p.v;
+        if (p.f < fMin) fMin = p.f;
+        if (p.f > fMax) fMax = p.f;
+      }
+    }
+    if (!Number.isFinite(vMin)) {
+      vMin = FV_V_FALLBACK_MIN;
+      vMax = FV_V_FALLBACK_MAX;
+      fMin = FV_F_FALLBACK_MIN;
+      fMax = FV_F_FALLBACK_MAX;
+    }
+    // Volumen y flujo siempre incluyen 0 como referencia visual
+    vMin = Math.min(vMin, 0);
+    vMax = Math.max(vMax, 0);
+    fMin = Math.min(fMin, 0);
+    fMax = Math.max(fMax, 0);
+    // Asegurar que PEF y FVC (incluso si el usuario los arrastró fuera
+    // del rango de la curva) permanezcan dentro del recuadro visible.
+    if (hasFvc) {
+      vMin = Math.min(vMin, fvcVol);
+      vMax = Math.max(vMax, fvcVol);
+    }
+    if (hasPef) {
+      vMin = Math.min(vMin, pefVol);
+      vMax = Math.max(vMax, pefVol);
+    }
+    const padV = Math.max(MIN_PAD_V, (vMax - vMin) * PAD_FRAC);
+    const padF = Math.max(MIN_PAD_F, (fMax - fMin) * PAD_FRAC);
+    return { vMin: vMin - padV, vMax: vMax + padV, fMin: fMin - padF, fMax: fMax + padF };
+  }, [allCurves, hasFvc, fvcVol, hasPef, pefVol]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -408,15 +524,6 @@ export function SpiroCharts({
 
   const vtWidth = Math.max(200, Math.floor((containerWidth * 2) / 3) - 4);
   const fvWidth = Math.max(160, containerWidth - vtWidth - 8);
-
-  // PEF y FVC los mueve el usuario; FEF25/50/75 se derivan repartiendo
-  // el intervalo (FVC − PEF) en cuartos.
-  const pef = refLines.pef;
-  const fvc = refLines.fvc;
-  const diff = (fvc - pef) / 4;
-  const fef25 = pef + diff;
-  const fef50 = pef + diff * 2;
-  const fef75 = pef + diff * 3;
 
   // ── Canvas Volumen / Tiempo ───────────────────────────────────────
   const drawVT = useCallback(
@@ -547,81 +654,234 @@ export function SpiroCharts({
       drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         vMin, vMax, fMin, fMax, currentColor ?? COLOR_CURRENT_FV, false);
 
-      // Líneas de referencia verticales: PEF/FVC arrastrables (sólidas);
-      // FEF25/50/75 derivadas (discontinuas). Labels rotados 90° para
-      // que nunca se solapen aunque las líneas estén juntas. Muestran
-      // volumen + flujo de la curva actual en ese volumen.
+      const xToPx = (x: number) =>
+        MARGIN_LEFT + ((x - vMin) / (vMax - vMin)) * plotW;
+      const yToPx = (y: number) =>
+        MARGIN_TOP + (1 - (y - fMin) / (fMax - fMin)) * plotH;
+
+      const hasInsp = current.some((p) => p.f < -0.2);
+
       ctx.save();
       ctx.beginPath();
       ctx.rect(MARGIN_LEFT, MARGIN_TOP, plotW, plotH);
       ctx.clip();
-      const refs = [
-        { x: pef, label: "PEF", draggable: true },
-        { x: fef25, label: "FEF25", draggable: false },
-        { x: fef50, label: "FEF50", draggable: false },
-        { x: fef75, label: "FEF75", draggable: false },
-        { x: fvc, label: "FVC", draggable: true },
-      ];
-      for (const r of refs) {
-        if (r.x < vMin || r.x > vMax) continue;
-        const px = MARGIN_LEFT + ((r.x - vMin) / (vMax - vMin)) * plotW;
-        const color = r.draggable ? COLOR_REF_DRAG : COLOR_REF_AUTO;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = r.draggable ? 1.5 : 1;
-        ctx.setLineDash(r.draggable ? [] : [3, 3]);
+
+      // Drop lines FEF 25 / 50 / 75 (rama espiratoria, azul)
+      if (hasFvc) {
+        const lines: Array<{ vol: number; lbl: string }> = [
+          { vol: fefVols.fef25, lbl: "FEF25%" },
+          { vol: fefVols.fef50, lbl: "FEF50%" },
+          { vol: fefVols.fef75, lbl: "FEF75%" },
+        ];
+        for (const { vol, lbl } of lines) {
+          const flow = flowAtV(current, vol);
+          if (flow === null || flow <= 0) continue;
+          const px = xToPx(vol);
+          const yZero = yToPx(0);
+          const yCurve = yToPx(flow);
+          ctx.strokeStyle = COLOR_FEF;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(px, yZero);
+          ctx.lineTo(px, yCurve);
+          ctx.stroke();
+          ctx.fillStyle = COLOR_FEF;
+          ctx.font = "bold 10px monospace";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText(lbl, px, yCurve - 3);
+        }
+      }
+
+      // Drop lines FIF 25 / 50 / 75 (rama inspiratoria, rojo)
+      if (hasFvc && hasInsp) {
+        const lines: Array<{ vol: number; lbl: string }> = [
+          { vol: fifVols.fif25, lbl: "FIF25%" },
+          { vol: fifVols.fif50, lbl: "FIF50%" },
+          { vol: fifVols.fif75, lbl: "FIF75%" },
+        ];
+        for (const { vol, lbl } of lines) {
+          const flow = inspFlowAtV(current, vol);
+          if (flow === null || flow >= 0) continue;
+          const px = xToPx(vol);
+          const yZero = yToPx(0);
+          const yCurve = yToPx(flow);
+          ctx.strokeStyle = COLOR_FIF;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(px, yZero);
+          ctx.lineTo(px, yCurve);
+          ctx.stroke();
+          ctx.fillStyle = COLOR_FIF;
+          ctx.font = "bold 10px monospace";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(lbl, px, yCurve + 3);
+        }
+      }
+
+      // Ancla PEF (pico espiratorio, naranja, arrastrable)
+      if (hasPef) {
+        const px = xToPx(pefVol);
+        const py = yToPx(pefFlow);
+        ctx.strokeStyle = COLOR_ANCHOR;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
         ctx.beginPath();
         ctx.moveTo(px, MARGIN_TOP);
         ctx.lineTo(px, MARGIN_TOP + plotH);
         ctx.stroke();
         ctx.setLineDash([]);
-        // Flujo en este volumen sobre la curva actual (coincide con el panel)
-        const f = flowAtV(current, r.x);
-        const valueText =
-          f !== null && Number.isFinite(f)
-            ? `${r.label}  v:${r.x.toFixed(2)}L  f:${f.toFixed(2)}L/s`
-            : `${r.label}  v:${r.x.toFixed(2)}L`;
-        ctx.save();
-        ctx.translate(px + 3, MARGIN_TOP + 4);
-        ctx.rotate(Math.PI / 2);
-        ctx.fillStyle = color;
-        ctx.font = `bold ${r.draggable ? 10 : 9}px monospace`;
+        ctx.fillStyle = COLOR_ANCHOR;
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = COLOR_ANCHOR;
+        ctx.font = "bold 10px monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillText(valueText, 0, 0);
-        ctx.restore();
+        ctx.fillText(`PEF ${pefFlow.toFixed(2)}`, px + 8, py);
+      }
+
+      // Ancla FVC (extremo derecho sobre el eje x, naranja, arrastrable)
+      if (hasFvc) {
+        const px = xToPx(fvcVol);
+        const py = yToPx(0);
+        ctx.strokeStyle = COLOR_ANCHOR;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(px, MARGIN_TOP);
+        ctx.lineTo(px, MARGIN_TOP + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = COLOR_ANCHOR;
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = COLOR_ANCHOR;
+        ctx.font = "bold 10px monospace";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(`FVC ${fvcVol.toFixed(2)}`, px - 5, py - 5);
       }
       ctx.restore();
+
+      // Etiquetas "Espiración" / "Inspiración" verticales al borde izquierdo
+      const labelX = MARGIN_LEFT + 6;
+      if (fMax > 0) {
+        const yExpMid = MARGIN_TOP + ((fMax - fMax * 0.55) / (fMax - fMin)) * plotH;
+        ctx.save();
+        ctx.translate(labelX, yExpMid);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillStyle = COLOR_EXP_LABEL;
+        ctx.font = "bold 10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText("Espiración", 0, 0);
+        ctx.restore();
+      }
+      if (hasInsp && fMin < 0) {
+        const yInspMid = MARGIN_TOP + ((fMax - fMin * 0.55) / (fMax - fMin)) * plotH;
+        ctx.save();
+        ctx.translate(labelX, yInspMid);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillStyle = COLOR_INSP_LABEL;
+        ctx.font = "bold 10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText("Inspiración", 0, 0);
+        ctx.restore();
+      }
 
       drawAxisLabels(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         vMin, vMax, fMin, fMax, xStep, yStep,
         theme.label, "V (L)", "Flujo (L/s)");
     },
-    [current, recordings, pef, fvc, fef25, fef50, fef75, fvView, currentColor],
+    [current, recordings, fvView, currentColor, hasPef, pefVol, pefFlow, hasFvc, fvcVol, fefVols, fifVols],
   );
 
-  // ── Drag de PEF / FVC en el canvas Flujo/Volumen ─────────────────
-  const dragRef = useRef<{ which: "pef" | "fvc" } | null>(null);
-  const [cursor, setCursor] = useState("default");
-  // ── Drag de marcadores A / B en el canvas Volumen/Tiempo ─────────
-  const vtDragRef = useRef<{ which: "a" | "b" } | null>(null);
-  const [vtCursor, setVtCursor] = useState("default");
-  // Pan (shift+drag o middle button): mueve el viewport, no los datos
-  const fvPanRef = useRef<{ startV: number; startF: number; view: FvView } | null>(null);
-  const vtPanRef = useRef<{ startT: number; startV: number; view: VtView } | null>(null);
+  // ── Drag de líneas en el canvas Flujo/Volumen ─────────────────────
+  // Cada línea (PEF, FVC, FEF25/50/75, FIF25/50/75) puede arrastrarse
+  // horizontalmente. La tolerancia de agarre es generosa (10 px).
+  const fvDragRef = useRef<FvKey | null>(null);
+  const [fvCursor, setFvCursor] = useState("default");
 
   const fvFromMouse = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = fvCanvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
     const plotW = fvWidth - MARGIN_LEFT - MARGIN_RIGHT;
-    const plotH = canvas.clientHeight - MARGIN_TOP - MARGIN_BOTTOM;
     const v = fvView.vMin + ((px - MARGIN_LEFT) / plotW) * (fvView.vMax - fvView.vMin);
-    const f = fvView.fMax - ((py - MARGIN_TOP) / plotH) * (fvView.fMax - fvView.fMin);
     const pxPerL = plotW / (fvView.vMax - fvView.vMin);
-    return { v, f, px, py, plotW, plotH, pxPerL };
+    return { v, px, pxPerL };
   }, [fvWidth, fvView]);
+
+  // Devuelve la línea draggable (PEF o FVC) más cercana al volumen `v`
+  // dentro de la tolerancia de agarre, o null si ninguna está al alcance.
+  const findNearestLine = useCallback(
+    (v: number, pxPerL: number): FvKey | null => {
+      const grab = FV_GRAB_PX / pxPerL;
+      const candidates: Array<[FvKey, number, boolean]> = [
+        ["pef", pefVol, hasPef],
+        ["fvc", fvcVol, hasFvc],
+      ];
+      let best: FvKey | null = null;
+      let bestD = grab;
+      for (const [key, vol, enabled] of candidates) {
+        if (!enabled) continue;
+        const d = Math.abs(v - vol);
+        if (d < bestD) {
+          bestD = d;
+          best = key;
+        }
+      }
+      return best;
+    },
+    [hasPef, pefVol, hasFvc, fvcVol],
+  );
+
+  const handleFVDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const m = fvFromMouse(e);
+    if (!m) return;
+    const key = findNearestLine(m.v, m.pxPerL);
+    if (key !== null) {
+      fvDragRef.current = key;
+      setFvCursor("ew-resize");
+    }
+  }, [fvFromMouse, findNearestLine]);
+
+  const handleFVMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const m = fvFromMouse(e);
+    if (!m) return;
+    const dragging = fvDragRef.current;
+    if (dragging) {
+      const clamped = Math.max(0, m.v);
+      if (dragging === "fvc") {
+        // FVC mínimo > 0 para no romper el cálculo de ratios
+        setFvcOverride(Math.max(0.05, clamped));
+      } else {
+        // PEF: guardamos su posición como ratio del FVC vigente; así, al
+        // mover FVC después, PEF se desplaza en paralelo.
+        if (fvcVol > 0) {
+          setPefRatioOverride(clamped / fvcVol);
+        }
+      }
+      return;
+    }
+    const key = findNearestLine(m.v, m.pxPerL);
+    setFvCursor(key !== null ? "ew-resize" : "default");
+  }, [fvFromMouse, findNearestLine, fvcVol]);
+
+  const handleFVUp = useCallback(() => {
+    fvDragRef.current = null;
+    setFvCursor("default");
+  }, []);
+
+  // ── Drag de marcadores A / B en el canvas Volumen/Tiempo ─────────
+  const vtDragRef = useRef<{ which: "a" | "b" } | null>(null);
+  const [vtCursor, setVtCursor] = useState("default");
 
   const vtFromMouse = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = vtCanvasRef.current;
@@ -637,92 +897,9 @@ export function SpiroCharts({
     return { t, v, px, py, pxPerS };
   }, [vtWidth, vtView]);
 
-  const handleFVDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = fvFromMouse(e);
-    if (!m) return;
-    // Shift+click o botón medio → pan
-    if (e.shiftKey || e.button === 1) {
-      fvPanRef.current = { startV: m.v, startF: m.f, view: fvView };
-      setCursor("grabbing");
-      return;
-    }
-    const grabL = REF_GRAB_PX / m.pxPerL;
-    if (Math.abs(m.v - pef) < grabL) {
-      dragRef.current = { which: "pef" };
-      setCursor("ew-resize");
-    } else if (Math.abs(m.v - fvc) < grabL) {
-      dragRef.current = { which: "fvc" };
-      setCursor("ew-resize");
-    }
-  }, [pef, fvc, fvFromMouse, fvView]);
-
-  const handleFVMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = fvFromMouse(e);
-    if (!m) return;
-    if (fvPanRef.current) {
-      // Mover el viewport en sentido inverso al delta del cursor
-      const v0 = fvPanRef.current.startV;
-      const f0 = fvPanRef.current.startF;
-      const base = fvPanRef.current.view;
-      const dv = m.v - v0;
-      const df = m.f - f0;
-      setFvView({
-        vMin: base.vMin - dv,
-        vMax: base.vMax - dv,
-        fMin: base.fMin - df,
-        fMax: base.fMax - df,
-      });
-      return;
-    }
-    if (dragRef.current) {
-      const clamped = Math.max(fvView.vMin, Math.min(fvView.vMax, m.v));
-      if (dragRef.current.which === "pef") {
-        onRefLinesChange({ pef: Math.min(clamped, fvc - 0.05), fvc });
-      } else {
-        onRefLinesChange({ pef, fvc: Math.max(clamped, pef + 0.05) });
-      }
-      return;
-    }
-    const grabL = REF_GRAB_PX / m.pxPerL;
-    if (Math.abs(m.v - pef) < grabL || Math.abs(m.v - fvc) < grabL) {
-      setCursor("ew-resize");
-    } else if (e.shiftKey) {
-      setCursor("grab");
-    } else {
-      setCursor("default");
-    }
-  }, [pef, fvc, fvFromMouse, onRefLinesChange, fvView]);
-
-  const handleFVUp = useCallback(() => {
-    dragRef.current = null;
-    fvPanRef.current = null;
-    setCursor("default");
-  }, []);
-
-  const handleFVWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const m = fvFromMouse(e as unknown as React.MouseEvent<HTMLCanvasElement>);
-    if (!m) return;
-    const factor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-    setFvView((v) => {
-      const [vMin, vMax] = zoomRange(v.vMin, v.vMax, m.v, factor, MIN_SPAN_V, MAX_SPAN_V);
-      const [fMin, fMax] = zoomRange(v.fMin, v.fMax, m.f, factor, MIN_SPAN_F, MAX_SPAN_F);
-      return { vMin, vMax, fMin, fMax };
-    });
-  }, [fvFromMouse]);
-
-  const handleFVDoubleClick = useCallback(() => {
-    setFvView(DEFAULT_FV_VIEW);
-  }, []);
-
   const handleVTDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const m = vtFromMouse(e);
     if (!m) return;
-    if (e.shiftKey || e.button === 1) {
-      vtPanRef.current = { startT: m.t, startV: m.v, view: vtView };
-      setVtCursor("grabbing");
-      return;
-    }
     const grabS = REF_GRAB_PX / m.pxPerS;
     const dA = Math.abs(m.t - markerLines.a);
     const dB = Math.abs(m.t - markerLines.b);
@@ -733,25 +910,11 @@ export function SpiroCharts({
       vtDragRef.current = { which: "b" };
       setVtCursor("ew-resize");
     }
-  }, [markerLines, vtFromMouse, vtView]);
+  }, [markerLines, vtFromMouse]);
 
   const handleVTMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const m = vtFromMouse(e);
     if (!m) return;
-    if (vtPanRef.current) {
-      const t0 = vtPanRef.current.startT;
-      const v0 = vtPanRef.current.startV;
-      const base = vtPanRef.current.view;
-      const dt = m.t - t0;
-      const dv = m.v - v0;
-      setVtView({
-        tMin: base.tMin - dt,
-        tMax: base.tMax - dt,
-        vMin: base.vMin - dv,
-        vMax: base.vMax - dv,
-      });
-      return;
-    }
     if (vtDragRef.current) {
       const clamped = Math.max(vtView.tMin, Math.min(vtView.tMax, m.t));
       if (vtDragRef.current.which === "a") {
@@ -764,8 +927,6 @@ export function SpiroCharts({
     const grabS = REF_GRAB_PX / m.pxPerS;
     if (Math.abs(m.t - markerLines.a) < grabS || Math.abs(m.t - markerLines.b) < grabS) {
       setVtCursor("ew-resize");
-    } else if (e.shiftKey) {
-      setVtCursor("grab");
     } else {
       setVtCursor("default");
     }
@@ -773,24 +934,7 @@ export function SpiroCharts({
 
   const handleVTUp = useCallback(() => {
     vtDragRef.current = null;
-    vtPanRef.current = null;
     setVtCursor("default");
-  }, []);
-
-  const handleVTWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const m = vtFromMouse(e as unknown as React.MouseEvent<HTMLCanvasElement>);
-    if (!m) return;
-    const factor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-    setVtView((v) => {
-      const [tMin, tMax] = zoomRange(v.tMin, v.tMax, m.t, factor, MIN_SPAN_T, MAX_SPAN_T);
-      const [vMin, vMax] = zoomRange(v.vMin, v.vMax, m.v, factor, MIN_SPAN_V, MAX_SPAN_V);
-      return { tMin, tMax, vMin, vMax };
-    });
-  }, [vtFromMouse]);
-
-  const handleVTDoubleClick = useCallback(() => {
-    setVtView(DEFAULT_VT_VIEW);
   }, []);
 
   return (
@@ -825,8 +969,6 @@ export function SpiroCharts({
               onMouseDown={handleVTDown}
               onMouseMove={handleVTMove}
               onMouseUp={handleVTUp}
-              onWheel={handleVTWheel}
-              onDoubleClick={handleVTDoubleClick}
               cursor={vtCursor}
               canvasRef={vtCanvasRef}
             />
@@ -855,33 +997,11 @@ export function SpiroCharts({
               onMouseDown={handleFVDown}
               onMouseMove={handleFVMove}
               onMouseUp={handleFVUp}
-              onWheel={handleFVWheel}
-              onDoubleClick={handleFVDoubleClick}
-              cursor={cursor}
+              cursor={fvCursor}
               canvasRef={fvCanvasRef}
             />
           </div>
         </>
-      )}
-      {isZoomed && (
-        <button
-          onClick={resetZoom}
-          title="Restablecer zoom (también doble click sobre el gráfico)"
-          style={{
-            position: "absolute",
-            top: 6,
-            right: 6,
-            fontSize: 10,
-            padding: "2px 8px",
-            borderRadius: 4,
-            background: "rgba(15, 23, 42, 0.85)",
-            color: "#e2e8f0",
-            border: "1px solid rgba(148, 163, 184, 0.4)",
-            cursor: "pointer",
-          }}
-        >
-          Reset zoom
-        </button>
       )}
     </div>
   );
