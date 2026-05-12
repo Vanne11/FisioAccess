@@ -577,31 +577,43 @@ export function SpiroMonitor() {
   }, []);
 
   // ─── Estudio (JSON con paciente + maniobras) ─────────────────────
-  const captureChartsImage = useCallback((): string => {
-    const host = chartsHostRef.current;
-    if (!host) return "";
-    const canvases = host.querySelectorAll("canvas");
-    if (canvases.length === 0) return "";
-    let totalW = 0;
-    let maxH = 0;
-    canvases.forEach((c) => {
-      totalW += c.width;
-      maxH = Math.max(maxH, c.height);
-    });
+  // Charts ocultos para capturar PRE y POST por separado en el PDF.
+  // Cuando hiddenRecordings tiene contenido, el chart oculto se renderiza
+  // con esos datos; al terminar la captura se vacía.
+  const hiddenChartsRef = useRef<HTMLDivElement>(null);
+  const [hiddenRecordings, setHiddenRecordings] = useState<SpiroRecording[]>([]);
+
+  const canvasToWhiteBgPNG = (canvas: HTMLCanvasElement): string => {
     const out = document.createElement("canvas");
-    out.width = totalW;
-    out.height = maxH;
+    out.width = canvas.width;
+    out.height = canvas.height;
     const ctx = out.getContext("2d");
     if (!ctx) return "";
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, totalW, maxH);
-    let x = 0;
-    canvases.forEach((c) => {
-      ctx.drawImage(c, x, 0);
-      x += c.width;
-    });
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(canvas, 0, 0);
     return out.toDataURL("image/png");
-  }, []);
+  };
+
+  const captureFilteredCharts = useCallback(
+    async (recs: SpiroRecording[]): Promise<{ vt?: string; fv?: string }> => {
+      if (recs.length === 0) return {};
+      setHiddenRecordings(recs);
+      // Esperar a que React monte el chart oculto y los useEffects internos
+      // dibujen los canvas (paint completo). Dos rAF garantiza ambos pasos.
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      const host = hiddenChartsRef.current;
+      if (!host) return {};
+      const canvases = host.querySelectorAll("canvas");
+      if (canvases.length < 2) return {};
+      return {
+        vt: canvasToWhiteBgPNG(canvases[0] as HTMLCanvasElement),
+        fv: canvasToWhiteBgPNG(canvases[1] as HTMLCanvasElement),
+      };
+    },
+    [],
+  );
 
   // Guarda el estudio en JSON y, en paralelo, un PDF clínico con el mismo
   // nombre base. El usuario elige la ruta del .json; el .pdf se escribe
@@ -628,8 +640,21 @@ export function SpiroMonitor() {
 
       await writeFile(path, new TextEncoder().encode(json));
 
-      const signalImage = captureChartsImage();
-      const pdf = generateSpiroPDF(study, { config: reportConfig, signalImage });
+      // Capturar gráficos PRE y POST por separado renderizándolos en el
+      // canvas oculto. Si el grupo está vacío, captureFilteredCharts
+      // devuelve {} y el PDF omite la sección correspondiente.
+      const preRecs = recordings.filter(
+        (r) => (bronchoByRec[r.id] ?? "PRE") === "PRE",
+      );
+      const postRecs = recordings.filter((r) => bronchoByRec[r.id] === "POST");
+      const preCharts = await captureFilteredCharts(preRecs);
+      const postCharts = await captureFilteredCharts(postRecs);
+      setHiddenRecordings([]);
+
+      const pdf = generateSpiroPDF(study, {
+        config: reportConfig,
+        charts: { pre: preCharts, post: postCharts },
+      });
       const bytes = pdf.output("arraybuffer");
       await writeFile(pdfPath, new Uint8Array(bytes));
 
@@ -637,7 +662,7 @@ export function SpiroMonitor() {
       setStudyAnalysis(analysis);
       setLastCalMsg(`Estudio guardado: ${path}  +  ${pdfPath}`);
     },
-    [recordings, bronchoByRec, markerLines, workDir, reportConfig, captureChartsImage],
+    [recordings, bronchoByRec, markerLines, workDir, reportConfig, captureFilteredCharts],
   );
 
   const handleOpenSave = useCallback(() => {
@@ -1266,6 +1291,7 @@ export function SpiroMonitor() {
                 <SpiroCharts
                   current={currentCurve}
                   currentColor={selectedRec?.color}
+                  currentRecording={selectedRec}
                   recordings={otherRecordings}
                   markerLines={markerLines}
                   onMarkerLinesChange={setMarkerLines}
@@ -1329,6 +1355,34 @@ export function SpiroMonitor() {
         initialAnalysis={studyAnalysis}
         recordingsCount={recordings.length}
       />
+
+      {/* Chart oculto fuera de pantalla — se monta durante el guardado
+          PDF para capturar PRE y POST por separado. */}
+      {hiddenRecordings.length > 0 && (
+        <div
+          ref={hiddenChartsRef}
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: -10000,
+            top: 0,
+            width: 900,
+            height: 260,
+            pointerEvents: "none",
+          }}
+        >
+          <SpiroCharts
+            current={hiddenRecordings[0].data}
+            currentColor={hiddenRecordings[0].color}
+            currentRecording={hiddenRecordings[0]}
+            recordings={hiddenRecordings.slice(1)}
+            markerLines={markerLines}
+            onMarkerLinesChange={() => {}}
+            height={260}
+            minHeight={260}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -8,12 +8,21 @@ import {
 } from "./metrics";
 import { computeQuality, computeSuggestions, type QualityResult } from "./quality";
 
+export interface SpiroChartImages {
+  /** PNG dataURL del canvas Volumen/Tiempo */
+  vt?: string;
+  /** PNG dataURL del canvas Flujo/Volumen */
+  fv?: string;
+}
+
 export interface SpiroPdfOptions {
   config: ReportConfig;
-  /** PNG dataURL del canvas combinado V-t + F-V (vista actual). */
-  signalImage?: string;
-  /** Etiqueta opcional bajo la imagen. */
-  signalLabel?: string;
+  /** Pares de imágenes de los gráficos para cada estado (PRE/POST).
+   *  Si sólo se entrega `pre`, se grafica como única sección. */
+  charts?: {
+    pre?: SpiroChartImages;
+    post?: SpiroChartImages;
+  };
 }
 
 const PAGE_W = 210;
@@ -73,12 +82,16 @@ function drawSectionTitle(pdf: jsPDF, y: number, title: string): number {
 }
 
 function drawPatientTable(pdf: jsPDF, y: number, s: SpiroStudy): number {
-  y = drawSectionTitle(pdf, y, "Datos del paciente");
+  y = drawSectionTitle(pdf, y, "Datos antropométricos");
+  const heightM = s.patient.estaturaCm / 100;
+  const imc = heightM > 0 ? s.patient.pesoKg / (heightM * heightM) : null;
+  const imcStr = imc !== null && Number.isFinite(imc) ? `${imc.toFixed(1)} kg/m²` : "—";
   const rows: Array<[string, string, string, string]> = [
     ["Nombre", s.patient.nombre || "—", "RUT", s.patient.rut || "—"],
     ["Sexo", s.patient.sexo, "F. nacimiento", s.patient.fechaNacimiento || "—"],
     ["Edad", `${s.patient.edad} años`, "Etnia", s.patient.etnia],
     ["Estatura", `${s.patient.estaturaCm} cm`, "Peso", `${s.patient.pesoKg.toFixed(1)} kg`],
+    ["IMC", imcStr, "", ""],
   ];
   const colW = CONTENT_W / 4;
   const rowH = 7;
@@ -107,16 +120,40 @@ function drawPatientTable(pdf: jsPDF, y: number, s: SpiroStudy): number {
   return y + 2;
 }
 
-function drawSignal(pdf: jsPDF, y: number, image: string | undefined, label: string): number {
-  if (!image) return y;
-  y = drawSectionTitle(pdf, y, label);
-  const targetW = CONTENT_W;
-  const targetH = 70;
-  y = ensureSpace(pdf, y, targetH + 4);
+/** Dibuja un par de imágenes (V/T y F/V) lado a lado bajo un header común.
+ *  Cada subgráfica tiene su propio título. Si falta una imagen, dibuja
+ *  sólo la otra ocupando el espacio. */
+function drawChartPair(
+  pdf: jsPDF,
+  y: number,
+  sectionLabel: string,
+  images: SpiroChartImages,
+): number {
+  const { vt, fv } = images;
+  if (!vt && !fv) return y;
+  y = drawSectionTitle(pdf, y, sectionLabel);
+  const gap = 4;
+  const targetH = 65;
+  const titleH = 5;
+  // Reparto 60/40 V-t / F-V (aproximadamente igual a la app)
+  const vtW = vt ? Math.floor((CONTENT_W - gap) * 0.6) : 0;
+  const fvW = fv ? CONTENT_W - vtW - (vt ? gap : 0) : 0;
+  y = ensureSpace(pdf, y, targetH + titleH + 4);
+
+  setText(pdf, C.subtitle, 9, true);
+  if (vt) pdf.text("Volumen / Tiempo", MARGIN + vtW / 2, y, { align: "center" });
+  if (fv) pdf.text("Flujo / Volumen", MARGIN + vtW + (vt ? gap : 0) + fvW / 2, y, { align: "center" });
+  y += titleH;
+
   try {
-    pdf.addImage(image, "PNG", MARGIN, y, targetW, targetH);
+    if (vt) pdf.addImage(vt, "PNG", MARGIN, y, vtW, targetH);
   } catch {
-    // ignore image errors
+    /* ignore */
+  }
+  try {
+    if (fv) pdf.addImage(fv, "PNG", MARGIN + vtW + (vt ? gap : 0), y, fvW, targetH);
+  } catch {
+    /* ignore */
   }
   return y + targetH + 4;
 }
@@ -298,7 +335,14 @@ export function generateSpiroPDF(
   const preAvg = preMetrics.length > 0 ? averageMetrics(preMetrics) : null;
   const postAvg = postMetrics.length > 0 ? averageMetrics(postMetrics) : null;
 
-  y = drawSignal(pdf, y, options.signalImage, options.signalLabel ?? "Curvas Volumen/Tiempo y Flujo/Volumen");
+  const preCharts = options.charts?.pre;
+  const postCharts = options.charts?.post;
+  if (preCharts && (preCharts.vt || preCharts.fv)) {
+    y = drawChartPair(pdf, y, "Curvas PRE bronco-dilatador", preCharts);
+  }
+  if (postCharts && (postCharts.vt || postCharts.fv)) {
+    y = drawChartPair(pdf, y, "Curvas POST bronco-dilatador", postCharts);
+  }
 
   y = drawResultsTable(pdf, y, preAvg, postAvg);
 

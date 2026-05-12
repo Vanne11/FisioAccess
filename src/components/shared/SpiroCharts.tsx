@@ -41,6 +41,9 @@ interface SpiroChartsProps {
    *  (azul para V-t, verde para F-V). Útil para mostrar la curva
    *  seleccionada con el mismo color de su entrada en la lista. */
   currentColor?: string;
+  /** Prueba activa (si la curva proviene de una grabación de la lista).
+   *  Se usa para mostrar la entrada de leyenda con su número. */
+  currentRecording?: SpiroRecording;
   /** Si se omite, el componente observa el alto disponible del
    *  contenedor padre y llena todo el espacio. */
   height?: number;
@@ -270,6 +273,54 @@ function drawZeroLines(
   ctx.stroke();
 }
 
+/** Leyenda compacta de pruebas en una esquina del chart.
+ *  `items` se renderiza en orden, cada uno con un cuadrado del color
+ *  de la curva, su nombre y un indicador opcional de "activa". */
+function drawLegend(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  items: Array<{ color: string; label: string; active?: boolean }>,
+) {
+  if (items.length === 0) return;
+  ctx.save();
+  ctx.font = "10px monospace";
+  const lineH = 12;
+  const swatch = 8;
+  const padX = 5;
+  const padY = 4;
+  // Calcula ancho según la entrada más larga
+  let maxW = 0;
+  for (const it of items) {
+    const w = ctx.measureText(it.label + (it.active ? "  ●" : "")).width;
+    if (w > maxW) maxW = w;
+  }
+  const boxW = swatch + 4 + maxW + padX * 2;
+  const boxH = items.length * lineH + padY * 2 - 2;
+  ctx.fillStyle = "rgba(15, 23, 42, 0.78)";
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.rect(x, y, boxW, boxH);
+  ctx.fill();
+  ctx.stroke();
+  let cy = y + padY + lineH * 0.5 + 1;
+  for (const it of items) {
+    ctx.fillStyle = it.color;
+    ctx.fillRect(x + padX, cy - swatch / 2, swatch, swatch);
+    ctx.fillStyle = it.active ? "#f8fafc" : "#cbd5e1";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(it.label, x + padX + swatch + 4, cy);
+    if (it.active) {
+      ctx.fillStyle = it.color;
+      ctx.fillText("●", x + padX + swatch + 4 + maxW - 6, cy);
+    }
+    cy += lineH;
+  }
+  ctx.restore();
+}
+
 function drawSeries(
   ctx: CanvasRenderingContext2D,
   pts: { x: number; y: number }[],
@@ -375,6 +426,7 @@ export function SpiroCharts({
   markerLines,
   onMarkerLinesChange,
   currentColor,
+  currentRecording,
   height,
   minHeight = 240,
 }: SpiroChartsProps) {
@@ -425,11 +477,12 @@ export function SpiroCharts({
     return { tMin: tMin - padT, tMax: tMax + padT, vMin: vMin - padV, vMax: vMax + padV };
   }, [allCurves, markerLines]);
 
-  // Anclas PEF y FVC arrastrables horizontalmente. Para que TODAS las
-  // líneas se muevan en paralelo cuando movés FVC, PEF se guarda como
-  // ratio (PEF/FVC), igual que las FEF/FIF 25/50/75 %. Así, mover FVC
-  // escala automáticamente PEF y las 6 drop-lines manteniendo las
-  // proporciones. Mover PEF re-establece su ratio para futuros movs.
+  // Anclas PEF y FVC arrastrables horizontalmente, en volúmenes absolutos
+  // independientes (como en la versión original). PEF se autocalcula al
+  // volumen del pico real de la curva; el usuario puede ajustarlo.
+  // FEF/FIF 25/50/75 % se reparten en cuartos entre PEF y FVC — al mover
+  // cualquiera de las dos anclas, las 6 drop-lines se redistribuyen en
+  // paralelo manteniendo las proporciones.
   type FvKey = "pef" | "fvc";
   const autoFvc = useMemo(() => {
     if (current.length === 0) return null;
@@ -441,31 +494,27 @@ export function SpiroCharts({
     return i !== null ? current[i].v : null;
   }, [current]);
   const [fvcOverride, setFvcOverride] = useState<number | null>(null);
-  const [pefRatioOverride, setPefRatioOverride] = useState<number | null>(null);
+  const [pefOverride, setPefOverride] = useState<number | null>(null);
   useEffect(() => {
     setFvcOverride(null);
-    setPefRatioOverride(null);
+    setPefOverride(null);
   }, [current]);
 
   const fvcVol = fvcOverride ?? autoFvc ?? 0;
   const hasFvc = fvcVol > 0;
-  const autoPefRatio =
-    autoPefVol !== null && autoFvc !== null && autoFvc > 0
-      ? autoPefVol / autoFvc
-      : null;
-  const pefRatio = pefRatioOverride ?? autoPefRatio;
-  const pefVol = pefRatio !== null ? pefRatio * fvcVol : 0;
+  const pefVol = pefOverride ?? autoPefVol ?? 0;
   const pefFlow = autoPefVol !== null ? (flowAtV(current, pefVol) ?? 0) : 0;
-  const hasPef = autoPefVol !== null && hasFvc;
+  const hasPef = autoPefVol !== null;
+  const fefStep = (fvcVol - pefVol) / 4;
   const fefVols = {
-    fef25: 0.25 * fvcVol,
-    fef50: 0.50 * fvcVol,
-    fef75: 0.75 * fvcVol,
+    fef25: pefVol + fefStep,
+    fef50: pefVol + fefStep * 2,
+    fef75: pefVol + fefStep * 3,
   };
   const fifVols = {
-    fif25: 0.25 * fvcVol,
-    fif50: 0.50 * fvcVol,
-    fif75: 0.75 * fvcVol,
+    fif25: pefVol + fefStep,
+    fif50: pefVol + fefStep * 2,
+    fif75: pefVol + fefStep * 3,
   };
 
   const fvView = useMemo<FvView>(() => {
@@ -524,6 +573,31 @@ export function SpiroCharts({
 
   const vtWidth = Math.max(200, Math.floor((containerWidth * 2) / 3) - 4);
   const fvWidth = Math.max(160, containerWidth - vtWidth - 8);
+
+  // Items de la leyenda: prueba activa (si la hay) marcada + resto de
+  // grabaciones. Ordenados por número de prueba para coincidir con el
+  // panel lateral.
+  const legendItems = useMemo(() => {
+    type Item = { color: string; label: string; active?: boolean; number: number };
+    const items: Item[] = [];
+    if (currentRecording) {
+      items.push({
+        color: currentRecording.color,
+        label: `Prueba ${currentRecording.number}`,
+        active: true,
+        number: currentRecording.number,
+      });
+    }
+    for (const r of recordings) {
+      items.push({
+        color: r.color,
+        label: `Prueba ${r.number}`,
+        number: r.number,
+      });
+    }
+    items.sort((a, b) => a.number - b.number);
+    return items.map(({ color, label, active }) => ({ color, label, active }));
+  }, [currentRecording, recordings]);
 
   // ── Canvas Volumen / Tiempo ───────────────────────────────────────
   const drawVT = useCallback(
@@ -622,8 +696,13 @@ export function SpiroCharts({
       drawAxisLabels(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         tMin, tMax, vMin, vMax, xStep, yStep,
         theme.label, "t (s)", "V (L)");
+
+      // Leyenda en la esquina superior derecha del plot
+      if (legendItems.length > 0) {
+        drawLegend(ctx, MARGIN_LEFT + plotW - 95, MARGIN_TOP + 4, legendItems);
+      }
     },
-    [current, recordings, markerLines, vtView, currentColor],
+    [current, recordings, markerLines, vtView, currentColor, legendItems],
   );
 
   // ── Canvas Flujo / Volumen ────────────────────────────────────────
@@ -797,8 +876,13 @@ export function SpiroCharts({
       drawAxisLabels(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         vMin, vMax, fMin, fMax, xStep, yStep,
         theme.label, "V (L)", "Flujo (L/s)");
+
+      // Leyenda en la esquina superior derecha del plot
+      if (legendItems.length > 0) {
+        drawLegend(ctx, MARGIN_LEFT + plotW - 95, MARGIN_TOP + 4, legendItems);
+      }
     },
-    [current, recordings, fvView, currentColor, hasPef, pefVol, pefFlow, hasFvc, fvcVol, fefVols, fifVols],
+    [current, recordings, fvView, currentColor, hasPef, pefVol, pefFlow, hasFvc, fvcVol, fefVols, fifVols, legendItems],
   );
 
   // ── Drag de líneas en el canvas Flujo/Volumen ─────────────────────
@@ -859,20 +943,17 @@ export function SpiroCharts({
     if (dragging) {
       const clamped = Math.max(0, m.v);
       if (dragging === "fvc") {
-        // FVC mínimo > 0 para no romper el cálculo de ratios
-        setFvcOverride(Math.max(0.05, clamped));
+        // FVC siempre a la derecha de PEF (con un pequeño margen)
+        setFvcOverride(Math.max(pefVol + 0.05, clamped));
       } else {
-        // PEF: guardamos su posición como ratio del FVC vigente; así, al
-        // mover FVC después, PEF se desplaza en paralelo.
-        if (fvcVol > 0) {
-          setPefRatioOverride(clamped / fvcVol);
-        }
+        // PEF a la izquierda de FVC
+        setPefOverride(Math.max(0, Math.min(fvcVol - 0.05, clamped)));
       }
       return;
     }
     const key = findNearestLine(m.v, m.pxPerL);
     setFvCursor(key !== null ? "ew-resize" : "default");
-  }, [fvFromMouse, findNearestLine, fvcVol]);
+  }, [fvFromMouse, findNearestLine, fvcVol, pefVol]);
 
   const handleFVUp = useCallback(() => {
     fvDragRef.current = null;

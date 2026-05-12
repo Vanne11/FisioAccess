@@ -11,9 +11,20 @@
         "shell:allow-open",
         "dialog:default",
         "dialog:allow-save",
+        "dialog:allow-open",
         "fs:default",
-        "fs:allow-write-text-file",
-        "fs:allow-write-file"
+        {
+          "identifier": "fs:allow-write-file",
+          "allow": [{ "path": "$HOME/**" }]
+        },
+        {
+          "identifier": "fs:allow-write-text-file",
+          "allow": [{ "path": "$HOME/**" }]
+        },
+        {
+          "identifier": "fs:allow-read-text-file",
+          "allow": [{ "path": "$HOME/**" }]
+        }
       ]
     }
   ]
