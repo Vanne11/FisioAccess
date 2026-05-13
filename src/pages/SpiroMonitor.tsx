@@ -111,6 +111,15 @@ function QualityBlock({
           </span>
         </span>
       </div>
+      {quality.nRejectedBev > 0 && (
+        <div
+          className="mt-1 text-[10px] text-red-300"
+          title="Maniobras con BEV > máx(150 mL, 5% FVC) — no cumplen aceptabilidad ATS/ERS"
+        >
+          {quality.nRejectedBev} maniobra{quality.nRejectedBev === 1 ? "" : "s"} rechazada
+          {quality.nRejectedBev === 1 ? "" : "s"} por BEV
+        </div>
+      )}
       {suggestions.length > 0 && (
         <ul className="mt-1 text-xs text-secondary space-y-0.5">
           {suggestions.map((s) => (
@@ -1148,6 +1157,21 @@ export function SpiroMonitor() {
                     </>
                   )}
                   <span className="col-span-2 border-t border-surface-700 my-1" />
+                  <span className="text-secondary font-semibold">FEV1</span>
+                  <span className="text-right font-semibold">
+                    {measurements.fev1 !== null ? `${measurements.fev1.toFixed(2)} L` : "—"}
+                  </span>
+                  <span className="text-secondary font-semibold">FEV1/FVC</span>
+                  <span className="text-right font-semibold">
+                    {measurements.fev1OverFvc !== null
+                      ? `${measurements.fev1OverFvc.toFixed(1)} %`
+                      : "—"}
+                  </span>
+                  <span className="col-span-2 border-t border-surface-700 my-1" />
+                  <span className="text-secondary text-[10px]" title="Cursores libres en el gráfico V-t">
+                    Cursores
+                  </span>
+                  <span />
                   <span className="text-secondary" style={{ color: "#ef4444" }}>
                     FEV(A) {markerLines.a.toFixed(2)}s
                   </span>
@@ -1164,12 +1188,30 @@ export function SpiroMonitor() {
                   <span className="text-right">
                     {measurements.deltaV !== null ? `${measurements.deltaV.toFixed(2)} L` : "—"}
                   </span>
-                  <span className="text-secondary font-semibold">FEV(A)/FVC</span>
-                  <span className="text-right font-semibold">
-                    {measurements.fevAOverFvc !== null
-                      ? `${measurements.fevAOverFvc.toFixed(1)} %`
-                      : "—"}
-                  </span>
+                  {measurements.backExtrap && (() => {
+                    const bevMl = measurements.backExtrap.bev * 1000;
+                    const limitMl = measurements.fvc !== null
+                      ? Math.max(150, 0.05 * measurements.fvc * 1000)
+                      : 150;
+                    const ok = bevMl <= limitMl;
+                    return (
+                      <>
+                        <span
+                          className="text-secondary text-[10px]"
+                          title={`Back-extrapolated volume. ATS/ERS exige < ${limitMl.toFixed(0)} mL (máx 150 mL ó 5% FVC)`}
+                        >
+                          BEV
+                        </span>
+                        <span
+                          className="text-right text-[10px]"
+                          style={{ color: ok ? "#10b981" : "#ef4444" }}
+                          title={ok ? "Cumple ATS/ERS" : "Excede el umbral ATS/ERS"}
+                        >
+                          {bevMl.toFixed(0)} mL
+                        </span>
+                      </>
+                    );
+                  })()}
                 </div>
               ) : (
                 <p className="text-xs text-muted">Sin datos</p>
@@ -1219,14 +1261,21 @@ export function SpiroMonitor() {
                         post={groupAverages.post?.fvc ?? null}
                       />
                       <GroupRow
-                        label="FEV(A)"
-                        pre={groupAverages.pre?.fevA ?? null}
-                        post={groupAverages.post?.fevA ?? null}
+                        label="FEV1"
+                        pre={groupAverages.pre?.fev1 ?? null}
+                        post={groupAverages.post?.fev1 ?? null}
                       />
                       <GroupRow
-                        label="FEV(A)/FVC"
-                        pre={groupAverages.pre?.fevAOverFvc ?? null}
-                        post={groupAverages.post?.fevAOverFvc ?? null}
+                        label="FEV1/FVC (avg)"
+                        pre={groupAverages.pre?.fev1OverFvc ?? null}
+                        post={groupAverages.post?.fev1OverFvc ?? null}
+                        digits={1}
+                        suffix=" %"
+                      />
+                      <GroupRow
+                        label="Mejor FEV1/FVC"
+                        pre={groupAverages.pre?.bestFev1OverBestFvc ?? null}
+                        post={groupAverages.post?.bestFev1OverBestFvc ?? null}
                         digits={1}
                         suffix=" %"
                       />

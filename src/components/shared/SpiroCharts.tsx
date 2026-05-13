@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from "react";
+import { computeBackExtrap } from "@/lib/spiro/metrics";
 
 /** Punto crudo de una espirometría: tiempo relativo en segundos. */
 export interface SpiroPoint {
@@ -6,6 +7,24 @@ export interface SpiroPoint {
   p: number; // kPa
   f: number; // L/s
   v: number; // L
+}
+
+/**
+ * Desplaza una curva al sistema de referencia clínico ATS/ERS:
+ *   - t' = t − t0_be   (t' = 0 en el "time-zero" back-extrapolado)
+ *   - v' = v − v0       (v' = 0 sobre la línea tangente proyectada)
+ *
+ * Si la curva no permite calcular back-extrap (pocos samples, sin flujo
+ * positivo), se devuelve sin modificar. El flujo no cambia.
+ */
+function shiftCurve(pts: SpiroPoint[]): SpiroPoint[] {
+  if (pts.length === 0) return pts;
+  const be = computeBackExtrap(pts);
+  if (!be) return pts;
+  const dt = be.t0;
+  const dv = be.v0;
+  if (dt === 0 && dv === 0) return pts;
+  return pts.map((p) => ({ t: p.t - dt, p: p.p, f: p.f, v: p.v - dv }));
 }
 
 export interface SpiroRecording {
@@ -435,16 +454,28 @@ export function SpiroCharts({
   const fvCanvasRef = useRef<HTMLCanvasElement>(null);
   const vtCanvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Curvas en sistema de referencia clínico ATS/ERS: cada una se desplaza
+  // por su propio t0_be / v0 para que t'=0, v'=0 corresponda al
+  // "time-zero" back-extrapolado. Toda la lógica de render, autoscale,
+  // marcadores y anclas opera sobre estas curvas desplazadas; markerLines
+  // y refLines son valores en este sistema (= segundos / litros desde la
+  // referencia clínica).
+  const shiftedCurrent = useMemo(() => shiftCurve(current), [current]);
+  const shiftedRecordings = useMemo(
+    () => recordings.map((r) => ({ ...r, data: shiftCurve(r.data) })),
+    [recordings],
+  );
+
   // Viewports derivados por autoscale: se recalculan en cada render según
   // datos + marcadores + líneas de referencia, garantizando que las
   // curvas siempre entren completas en el recuadro. Sin estado mutable
   // → no se "descuadra" con interacciones del usuario.
   const allCurves = useMemo(() => {
     const list: SpiroPoint[][] = [];
-    if (current.length > 0) list.push(current);
-    for (const r of recordings) if (r.data.length > 0) list.push(r.data);
+    if (shiftedCurrent.length > 0) list.push(shiftedCurrent);
+    for (const r of shiftedRecordings) if (r.data.length > 0) list.push(r.data);
     return list;
-  }, [current, recordings]);
+  }, [shiftedCurrent, shiftedRecordings]);
 
   const vtView = useMemo<VtView>(() => {
     let tMin = Infinity;
@@ -485,14 +516,14 @@ export function SpiroCharts({
   // paralelo manteniendo las proporciones.
   type FvKey = "pef" | "fvc";
   const autoFvc = useMemo(() => {
-    if (current.length === 0) return null;
-    const v = current.reduce((m, p) => (p.v > m ? p.v : m), -Infinity);
+    if (shiftedCurrent.length === 0) return null;
+    const v = shiftedCurrent.reduce((m, p) => (p.v > m ? p.v : m), -Infinity);
     return Number.isFinite(v) && v > 0 ? v : null;
-  }, [current]);
+  }, [shiftedCurrent]);
   const autoPefVol = useMemo(() => {
-    const i = peakExpIndex(current);
-    return i !== null ? current[i].v : null;
-  }, [current]);
+    const i = peakExpIndex(shiftedCurrent);
+    return i !== null ? shiftedCurrent[i].v : null;
+  }, [shiftedCurrent]);
   const [fvcOverride, setFvcOverride] = useState<number | null>(null);
   const [pefOverride, setPefOverride] = useState<number | null>(null);
   useEffect(() => {
@@ -503,7 +534,7 @@ export function SpiroCharts({
   const fvcVol = fvcOverride ?? autoFvc ?? 0;
   const hasFvc = fvcVol > 0;
   const pefVol = pefOverride ?? autoPefVol ?? 0;
-  const pefFlow = autoPefVol !== null ? (flowAtV(current, pefVol) ?? 0) : 0;
+  const pefFlow = autoPefVol !== null ? (flowAtV(shiftedCurrent, pefVol) ?? 0) : 0;
   const hasPef = autoPefVol !== null;
   const fefStep = (fvcVol - pefVol) / 4;
   const fefVols = {
@@ -618,14 +649,14 @@ export function SpiroCharts({
         tMin, tMax, vMin, vMax, theme.axis);
 
       // Curvas pasadas (discontinuas)
-      for (const rec of recordings) {
+      for (const rec of shiftedRecordings) {
         const pts = rec.data.map(p => ({ x: p.t, y: p.v }));
         drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
           tMin, tMax, vMin, vMax, rec.color, true);
       }
 
       // Curva actual (color personalizado si la prueba seleccionada lo define)
-      const pts = current.map(p => ({ x: p.t, y: p.v }));
+      const pts = shiftedCurrent.map(p => ({ x: p.t, y: p.v }));
       drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         tMin, tMax, vMin, vMax, currentColor ?? COLOR_CURRENT_VT, false);
 
@@ -654,7 +685,7 @@ export function SpiroCharts({
         ctx.lineTo(px, MARGIN_TOP + plotH);
         ctx.stroke();
 
-        const y = yAtX(current, m.x);
+        const y = yAtX(shiftedCurrent, m.x);
         yValues.push(y);
 
         // Punto sobre la curva (si interpola dentro de rango)
@@ -702,7 +733,7 @@ export function SpiroCharts({
         drawLegend(ctx, MARGIN_LEFT + plotW - 95, MARGIN_TOP + 4, legendItems);
       }
     },
-    [current, recordings, markerLines, vtView, currentColor, legendItems],
+    [shiftedCurrent, shiftedRecordings, markerLines, vtView, currentColor, legendItems],
   );
 
   // ── Canvas Flujo / Volumen ────────────────────────────────────────
@@ -723,13 +754,13 @@ export function SpiroCharts({
       drawZeroLines(ctx, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         vMin, vMax, fMin, fMax, theme.axis);
 
-      for (const rec of recordings) {
+      for (const rec of shiftedRecordings) {
         const pts = rec.data.map(p => ({ x: p.v, y: p.f }));
         drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
           vMin, vMax, fMin, fMax, rec.color, true);
       }
 
-      const pts = current.map(p => ({ x: p.v, y: p.f }));
+      const pts = shiftedCurrent.map(p => ({ x: p.v, y: p.f }));
       drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         vMin, vMax, fMin, fMax, currentColor ?? COLOR_CURRENT_FV, false);
 
@@ -738,7 +769,7 @@ export function SpiroCharts({
       const yToPx = (y: number) =>
         MARGIN_TOP + (1 - (y - fMin) / (fMax - fMin)) * plotH;
 
-      const hasInsp = current.some((p) => p.f < -0.2);
+      const hasInsp = shiftedCurrent.some((p) => p.f < -0.2);
 
       ctx.save();
       ctx.beginPath();
@@ -753,7 +784,7 @@ export function SpiroCharts({
           { vol: fefVols.fef75, lbl: "FEF75%" },
         ];
         for (const { vol, lbl } of lines) {
-          const flow = flowAtV(current, vol);
+          const flow = flowAtV(shiftedCurrent, vol);
           if (flow === null || flow <= 0) continue;
           const px = xToPx(vol);
           const yZero = yToPx(0);
@@ -780,7 +811,7 @@ export function SpiroCharts({
           { vol: fifVols.fif75, lbl: "FIF75%" },
         ];
         for (const { vol, lbl } of lines) {
-          const flow = inspFlowAtV(current, vol);
+          const flow = inspFlowAtV(shiftedCurrent, vol);
           if (flow === null || flow >= 0) continue;
           const px = xToPx(vol);
           const yZero = yToPx(0);
@@ -882,7 +913,7 @@ export function SpiroCharts({
         drawLegend(ctx, MARGIN_LEFT + plotW - 95, MARGIN_TOP + 4, legendItems);
       }
     },
-    [current, recordings, fvView, currentColor, hasPef, pefVol, pefFlow, hasFvc, fvcVol, fefVols, fifVols, legendItems],
+    [shiftedCurrent, shiftedRecordings, fvView, currentColor, hasPef, pefVol, pefFlow, hasFvc, fvcVol, fefVols, fifVols, legendItems],
   );
 
   // ── Drag de líneas en el canvas Flujo/Volumen ─────────────────────

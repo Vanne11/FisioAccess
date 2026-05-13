@@ -192,9 +192,9 @@ function drawResultsTable(
   const params: Array<[string, keyof SpiroGroupAverage, number, string]> = [
     ["PEF", "pef", 2, "L/s"],
     ["FVC", "fvc", 2, "L"],
-    ["FEV(A)", "fevA", 2, "L"],
-    ["FEV(B)", "fevB", 2, "L"],
-    ["FEV(A)/FVC", "fevAOverFvc", 1, "%"],
+    ["FEV1", "fev1", 2, "L"],
+    ["FEV1/FVC (avg)", "fev1OverFvc", 1, "%"],
+    ["Mejor FEV1/FVC", "bestFev1OverBestFvc", 1, "%"],
     ["FEF25", "fef25", 2, "L/s"],
     ["FEF50", "fef50", 2, "L/s"],
     ["FEF75", "fef75", 2, "L/s"],
@@ -228,7 +228,8 @@ function drawQuality(
   setText(pdf, C.muted, 9, false);
   pdf.text(
     `· n=${q.nManeuvers}` +
-      (q.repeatabilityMl !== null ? `  · repetibilidad ${q.repeatabilityMl.toFixed(0)} ml` : ""),
+      (q.repeatabilityMl !== null ? `  · repetibilidad ${q.repeatabilityMl.toFixed(0)} ml` : "") +
+      (q.nRejectedBev > 0 ? `  · ${q.nRejectedBev} rechazada(s) por BEV` : ""),
     MARGIN + 45,
     y,
   );

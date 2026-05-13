@@ -4,7 +4,10 @@ export type QualityGrade = "A" | "B" | "C" | "D" | "—";
 
 export interface QualityResult {
   grade: QualityGrade;
+  /** Maniobras aceptables (BEV pass + PEF válido) usadas para el grado. */
   nManeuvers: number;
+  /** Maniobras rechazadas por BEV > máx(150 mL, 5 % FVC). */
+  nRejectedBev: number;
   repeatabilityMl: number | null;
   pefValuesLs: number[];
 }
@@ -16,22 +19,41 @@ export interface QualitySuggestion {
 }
 
 /**
- * Grado de calidad ATS/ERS basado en repetibilidad de PEF entre maniobras.
- * Mismo umbral que el proyecto Python padre (150/200 ml).
+ * Criterio ATS/ERS de aceptabilidad por BEV (back-extrapolated volume):
+ * BEV ≤ máx(150 mL, 5 % FVC). Si la maniobra no tiene back-extrap o FVC
+ * válidos, se considera no-aceptable (true cuando ambos OK y BEV cumple).
+ */
+export function isBevAcceptable(m: SpiroMetrics): boolean {
+  if (!m.backExtrap) return false;
+  if (m.fvc === null || !Number.isFinite(m.fvc) || m.fvc <= 0) return false;
+  const limit = Math.max(0.150, 0.05 * m.fvc);
+  return m.backExtrap.bev <= limit;
+}
+
+/**
+ * Grado de calidad ATS/ERS basado en la repetibilidad de PEF entre maniobras
+ * *aceptables* (las que cumplen el criterio BEV). Mismos umbrales del proyecto
+ * Python padre (150/200 mL).
  *
  *   n>=3 ∧ rep<150 ml → A
  *   n>=3 ∧ rep<200 ml → B
  *   n>=2 ∧ rep<200 ml → C
  *   n>=2             → D
- *   otherwise        → "—" (sin grado, falta maniobras)
+ *   otherwise        → "—" (sin grado, faltan maniobras aceptables)
  */
 export function computeQuality(metricsList: SpiroMetrics[]): QualityResult {
-  const pefValuesLs = metricsList
+  const accepted: SpiroMetrics[] = [];
+  let nRejectedBev = 0;
+  for (const m of metricsList) {
+    if (isBevAcceptable(m)) accepted.push(m);
+    else nRejectedBev++;
+  }
+  const pefValuesLs = accepted
     .map((m) => m.pef)
     .filter((p): p is number => p !== null && Number.isFinite(p));
   const n = pefValuesLs.length;
   if (n < 2) {
-    return { grade: "—", nManeuvers: n, repeatabilityMl: null, pefValuesLs };
+    return { grade: "—", nManeuvers: n, nRejectedBev, repeatabilityMl: null, pefValuesLs };
   }
   const max = Math.max(...pefValuesLs);
   const min = Math.min(...pefValuesLs);
@@ -41,7 +63,7 @@ export function computeQuality(metricsList: SpiroMetrics[]): QualityResult {
   else if (n >= 3 && repeatabilityMl < 200) grade = "B";
   else if (repeatabilityMl < 200) grade = "C";
   else grade = "D";
-  return { grade, nManeuvers: n, repeatabilityMl, pefValuesLs };
+  return { grade, nManeuvers: n, nRejectedBev, repeatabilityMl, pefValuesLs };
 }
 
 const GRADE_ORDER: Record<QualityGrade, number> = {
