@@ -359,7 +359,9 @@ export function SpiroMonitor() {
         let newId: number | null = null;
         setRecordings((prev) => {
           if (prev.length >= maxRec) return prev;
-          const num = prev.length + 1;
+          const num = prev.length === 0
+            ? 1
+            : Math.max(...prev.map((r) => r.number)) + 1;
           newId = nextRecIdRef.current++;
           return [
             ...prev,
@@ -549,7 +551,9 @@ export function SpiroMonitor() {
     let newId: number | null = null;
     setRecordings((prev) => {
       if (prev.length >= maxRecordings) return prev;
-      const num = prev.length + 1;
+      const num = prev.length === 0
+        ? 1
+        : Math.max(...prev.map((r) => r.number)) + 1;
       newId = nextRecIdRef.current++;
       return [
         ...prev,
@@ -739,7 +743,9 @@ export function SpiroMonitor() {
       let newId: number | null = null;
       setRecordings((prev) => {
         if (prev.length >= maxRecordingsRef.current) return prev;
-        const num = prev.length + 1;
+        const num = prev.length === 0
+          ? 1
+          : Math.max(...prev.map((r) => r.number)) + 1;
         newId = nextRecIdRef.current++;
         return [
           ...prev,
