@@ -1087,7 +1087,7 @@ export function SpiroMonitor() {
             </CardContent>
           </Card>
 
-          <Card className="flex-1">
+          <Card className="flex-1 flex flex-col min-h-0 overflow-hidden">
             <CardHeader>
               <div className="flex items-center justify-between w-full">
                 <span>
@@ -1106,7 +1106,7 @@ export function SpiroMonitor() {
                 )}
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex-1 min-h-0 overflow-y-auto">
               {measurements ? (
                 <div className="grid grid-cols-[1fr_auto] gap-x-2 gap-y-1 text-xs font-mono">
                   <span className="text-secondary">PEF</span>
