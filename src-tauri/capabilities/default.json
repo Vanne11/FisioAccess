@@ -12,6 +12,7 @@
         "dialog:default",
         "dialog:allow-save",
         "dialog:allow-open",
+        "dialog:allow-ask",
         "fs:default",
         {
           "identifier": "fs:allow-write-file",

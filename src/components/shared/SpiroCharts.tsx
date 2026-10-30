@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from "react";
-import { computeBackExtrap } from "@/lib/spiro/metrics";
+import { closeInspLimb, computeBackExtrap } from "@/lib/spiro/metrics";
 
 /** Punto crudo de una espirometría: tiempo relativo en segundos. */
 export interface SpiroPoint {
@@ -21,6 +21,7 @@ function shiftCurve(pts: SpiroPoint[]): SpiroPoint[] {
   if (pts.length === 0) return pts;
   const be = computeBackExtrap(pts);
   if (!be) return pts;
+  pts = closeInspLimb(pts, be.v0);
   const dt = be.t0;
   const dv = be.v0;
   if (dt === 0 && dv === 0) return pts;

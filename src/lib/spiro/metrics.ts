@@ -1,4 +1,5 @@
 import type { SpiroPoint } from "@/components/shared/SpiroCharts";
+import { isBevAcceptable } from "./quality";
 
 /**
  * Resultado de back-extrapolación (ATS/ERS 2019, Standardization of Spirometry).
@@ -34,6 +35,8 @@ export interface SpiroMetrics {
   fef25: number | null;
   fef50: number | null;
   fef75: number | null;
+  /** Flujo medio entre el 25 y 75 % del FVC (MMEF), L/s. */
+  fef2575: number | null;
   fevAOverFvc: number | null;
   /** Flujos inspiratorios al 25/50/75 % del FVC (valor absoluto, L/s). */
   fif25: number | null;
@@ -66,6 +69,42 @@ function flowAtVolume(curve: SpiroPoint[], target: number): number | null {
     }
   }
   return null;
+}
+
+function timeAtVolume(curve: SpiroPoint[], target: number): number | null {
+  for (let i = 1; i < curve.length; i++) {
+    const v0 = curve[i - 1].v;
+    const v1 = curve[i].v;
+    if (v0 <= target && v1 >= target && v1 !== v0) {
+      const t = (target - v0) / (v1 - v0);
+      return curve[i - 1].t + (curve[i].t - curve[i - 1].t) * t;
+    }
+  }
+  return null;
+}
+
+/**
+ * Cierra el lazo F/V: reescala el volumen de la rama inspiratoria (después
+ * del pico de volumen) para que termine en `vRef` (volumen inicial). Corrige
+ * la deriva de integración del firmware y el FIVC ≠ FVC; el flujo no cambia.
+ * Si la inspiración es < 25 % del FVC no hay rama que estirar y se devuelve
+ * la curva tal cual.
+ */
+export function closeInspLimb(curve: SpiroPoint[], vRef: number): SpiroPoint[] {
+  if (curve.length < 2) return curve;
+  let peakIdx = 0;
+  for (let i = 1; i < curve.length; i++) {
+    if (curve[i].v > curve[peakIdx].v) peakIdx = i;
+  }
+  const vPeak = curve[peakIdx].v;
+  const vEnd = curve[curve.length - 1].v;
+  const exp = vPeak - vRef;
+  const insp = vPeak - vEnd;
+  if (!(exp > 0) || insp < 0.25 * exp) return curve;
+  const k = exp / insp;
+  return curve.map((p, i) =>
+    i <= peakIdx ? p : { ...p, v: vPeak - (vPeak - p.v) * k },
+  );
 }
 
 /**
@@ -129,13 +168,14 @@ export function computeBackExtrap(curve: SpiroPoint[]): SpiroBackExtrap | null {
 }
 
 export function computeSpiroMetrics(
-  curve: SpiroPoint[],
+  rawCurve: SpiroPoint[],
   markerA: number,
   markerB: number,
 ): SpiroMetrics | null {
-  if (curve.length === 0) return null;
+  if (rawCurve.length === 0) return null;
 
-  const be = computeBackExtrap(curve);
+  const be = computeBackExtrap(rawCurve);
+  const curve = closeInspLimb(rawCurve, be?.v0 ?? 0);
   const t0 = be?.t0 ?? 0;
   const v0 = be?.v0 ?? 0;
 
@@ -173,6 +213,12 @@ export function computeSpiroMetrics(
   const inspFlowAtCorrFvcFrac = (frac: number) =>
     fvcOk ? inspFlowAtVolume(curve, frac * fvc + v0) : null;
 
+  // FEF25-75: volumen entre 25 y 75 % del FVC / tiempo en recorrerlo.
+  const t25 = fvcOk ? timeAtVolume(curve, 0.25 * fvc + v0) : null;
+  const t75 = fvcOk ? timeAtVolume(curve, 0.75 * fvc + v0) : null;
+  const fef2575 =
+    fvcOk && t25 !== null && t75 !== null && t75 > t25 ? (0.5 * fvc) / (t75 - t25) : null;
+
   return {
     pef,
     fvc,
@@ -184,6 +230,7 @@ export function computeSpiroMetrics(
     fef25: flowAtCorrFvcFrac(0.25),
     fef50: flowAtCorrFvcFrac(0.5),
     fef75: flowAtCorrFvcFrac(0.75),
+    fef2575,
     fevAOverFvc: fevA !== null && fvcOk ? (fevA / fvc) * 100 : null,
     fif25: inspFlowAtCorrFvcFrac(0.25),
     fif50: inspFlowAtCorrFvcFrac(0.5),
@@ -203,6 +250,7 @@ export interface SpiroGroupAverage {
   fef25: number | null;
   fef50: number | null;
   fef75: number | null;
+  fef2575: number | null;
   fevAOverFvc: number | null;
   fif25: number | null;
   fif50: number | null;
@@ -247,6 +295,7 @@ export function averageMetrics(list: SpiroMetrics[]): SpiroGroupAverage {
     fef25: avg(list.map((m) => m.fef25)),
     fef50: avg(list.map((m) => m.fef50)),
     fef75: avg(list.map((m) => m.fef75)),
+    fef2575: avg(list.map((m) => m.fef2575)),
     fevAOverFvc: avg(list.map((m) => m.fevAOverFvc)),
     fif25: avg(list.map((m) => m.fif25)),
     fif50: avg(list.map((m) => m.fif50)),
@@ -256,5 +305,60 @@ export function averageMetrics(list: SpiroMetrics[]): SpiroGroupAverage {
     bestFev1OverBestFvc: ratio(bestFev1, bestFvc),
     bestFevA,
     bestFevAOverBestFvc: ratio(bestFevA, bestFvc),
+  };
+}
+
+/**
+ * Valores informados según ATS/ERS 2019 (no promedios):
+ *   - FVC y FEV1: el mayor de las maniobras aceptables (pueden venir de
+ *     maniobras distintas); FEV1/FVC = mejor FEV1 / mejor FVC.
+ *   - PEF, FEF y FIF: de la "mejor prueba" = maniobra aceptable con mayor
+ *     FEV1 + FVC.
+ * Aceptable = cumple BEV (`isBevAcceptable`). Si ninguna lo cumple se usan
+ * todas y `fallback` queda en true para advertirlo.
+ */
+export interface SpiroReported {
+  nAccepted: number;
+  fallback: boolean;
+  fvc: number | null;
+  fev1: number | null;
+  fev1OverFvc: number | null;
+  /** Número de prueba de la mejor curva. */
+  bestTestNumber: number | null;
+  pef: number | null;
+  fef25: number | null;
+  fef50: number | null;
+  fef75: number | null;
+  fef2575: number | null;
+  fif25: number | null;
+  fif50: number | null;
+  fif75: number | null;
+}
+
+export function reportedValues(
+  list: Array<{ number: number; m: SpiroMetrics }>,
+): SpiroReported | null {
+  if (list.length === 0) return null;
+  const accepted = list.filter((x) => isBevAcceptable(x.m));
+  const pool = accepted.length > 0 ? accepted : list;
+  const fvc = max(pool.map((x) => x.m.fvc));
+  const fev1 = max(pool.map((x) => x.m.fev1));
+  const sum = (m: SpiroMetrics) => (m.fvc ?? 0) + (m.fev1 ?? 0);
+  const best = pool.reduce((a, b) => (sum(b.m) > sum(a.m) ? b : a));
+  return {
+    nAccepted: accepted.length,
+    fallback: accepted.length === 0,
+    fvc,
+    fev1,
+    fev1OverFvc: fvc !== null && fev1 !== null && fvc > 0 ? (fev1 / fvc) * 100 : null,
+    bestTestNumber: best.number,
+    pef: best.m.pef,
+    fef25: best.m.fef25,
+    fef50: best.m.fef50,
+    fef75: best.m.fef75,
+    fef2575: best.m.fef2575,
+    fif25: best.m.fif25,
+    fif50: best.m.fif50,
+    fif75: best.m.fif75,
   };
 }

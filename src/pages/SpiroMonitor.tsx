@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Wind, Trash2, FileText, FolderOpen, Eraser, Play, RefreshCcw, FileSignature, FlaskConical } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { save as saveDialog, open as openDialog, ask } from "@tauri-apps/plugin-dialog";
 import { writeFile, readTextFile } from "@tauri-apps/plugin-fs";
 import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardContent } from "@/components/ui/Card";
@@ -30,7 +30,9 @@ import {
 import {
   computeSpiroMetrics,
   averageMetrics,
+  reportedValues,
   type SpiroMetrics,
+  type SpiroReported,
   type SpiroGroupAverage,
 } from "@/lib/spiro/metrics";
 import {
@@ -143,15 +145,17 @@ function GroupRow({
   post,
   digits = 2,
   suffix = "",
+  prefix = "",
 }: {
   label: string;
   pre: number | null;
   post: number | null;
   digits?: number;
   suffix?: string;
+  prefix?: string;
 }) {
   const fmt = (v: number | null) =>
-    v !== null && Number.isFinite(v) ? `${v.toFixed(digits)}${suffix}` : "—";
+    v !== null && Number.isFinite(v) ? `${prefix}${v.toFixed(digits)}${suffix}` : "—";
   return (
     <tr>
       <td className="text-secondary pr-1">{label}</td>
@@ -571,7 +575,14 @@ export function SpiroMonitor() {
     setLastCalMsg("Prueba sintética generada");
   }, [recordings.length, maxRecordings, recordingSecs]);
 
-  const handleClearAll = useCallback(() => {
+  const handleClearAll = useCallback(async () => {
+    if (recordings.length > 0) {
+      const ok = await ask(
+        `Se borrarán las ${recordings.length} pruebas registradas. Esta acción no se puede deshacer.`,
+        { title: "Borrar todos los registros", kind: "warning", okLabel: "Borrar todo", cancelLabel: "Cancelar" },
+      );
+      if (!ok) return;
+    }
     setRecordings([]);
     accumRef.current = [];
     setDisplayData([]);
@@ -582,7 +593,7 @@ export function SpiroMonitor() {
     clearArmFallback();
     setDisplayMode("idle");
     if (fsm === "recording") setFsm("calibrated");
-  }, [fsm]);
+  }, [fsm, recordings.length]);
 
   const handleDeleteRec = useCallback((id: number) => {
     setRecordings((prev) => prev.filter((r) => r.id !== id));
@@ -935,11 +946,13 @@ export function SpiroMonitor() {
   const groupAnalysis = useMemo<{
     pre: {
       avg: SpiroGroupAverage | null;
+      reported: SpiroReported | null;
       quality: QualityResult;
       suggestions: QualitySuggestion[];
     };
     post: {
       avg: SpiroGroupAverage | null;
+      reported: SpiroReported | null;
       quality: QualityResult;
       suggestions: QualitySuggestion[];
     };
@@ -962,11 +975,13 @@ export function SpiroMonitor() {
     return {
       pre: {
         avg: preMetrics.length > 0 ? averageMetrics(preMetrics) : null,
+        reported: reportedValues(preMetrics.map((m, i) => ({ number: preNums[i], m }))),
         quality: computeQuality(preMetrics),
         suggestions: computeSuggestions(preMetrics, preNums),
       },
       post: {
         avg: postMetrics.length > 0 ? averageMetrics(postMetrics) : null,
+        reported: reportedValues(postMetrics.map((m, i) => ({ number: postNums[i], m }))),
         quality: computeQuality(postMetrics),
         suggestions: computeSuggestions(postMetrics, postNums),
       },
@@ -974,6 +989,10 @@ export function SpiroMonitor() {
   }, [recordings, markerLines, getBroncho]);
   const groupAverages = useMemo(
     () => ({ pre: groupAnalysis.pre.avg, post: groupAnalysis.post.avg }),
+    [groupAnalysis],
+  );
+  const reported = useMemo(
+    () => ({ pre: groupAnalysis.pre.reported, post: groupAnalysis.post.reported }),
     [groupAnalysis],
   );
 
@@ -1236,10 +1255,13 @@ export function SpiroMonitor() {
                 </div>
               )}
 
-              {(groupAverages.pre || groupAverages.post) && (
+              {(reported.pre || reported.post) && (
                 <div className="mt-3 pt-3 border-t border-surface-700">
-                  <p className="text-sm font-medium text-secondary mb-2">
-                    Promedios
+                  <p
+                    className="text-sm font-medium text-secondary mb-2"
+                    title="ATS/ERS 2019: mayor FVC y FEV1 de maniobras aceptables; flujos de la mejor prueba (mayor FEV1 + FVC)"
+                  >
+                    Valores informados
                   </p>
                   <table className="w-full text-xs font-mono">
                     <thead>
@@ -1251,42 +1273,163 @@ export function SpiroMonitor() {
                     </thead>
                     <tbody>
                       <GroupRow
-                        label={`n`}
-                        pre={groupAverages.pre?.count ?? null}
-                        post={groupAverages.post?.count ?? null}
+                        label="Mejor prueba"
+                        pre={reported.pre?.bestTestNumber ?? null}
+                        post={reported.post?.bestTestNumber ?? null}
                         digits={0}
-                      />
-                      <GroupRow
-                        label="PEF"
-                        pre={groupAverages.pre?.pef ?? null}
-                        post={groupAverages.post?.pef ?? null}
+                        prefix="#"
                       />
                       <GroupRow
                         label="FVC"
-                        pre={groupAverages.pre?.fvc ?? null}
-                        post={groupAverages.post?.fvc ?? null}
+                        pre={reported.pre?.fvc ?? null}
+                        post={reported.post?.fvc ?? null}
                       />
                       <GroupRow
                         label="FEV1"
-                        pre={groupAverages.pre?.fev1 ?? null}
-                        post={groupAverages.post?.fev1 ?? null}
+                        pre={reported.pre?.fev1 ?? null}
+                        post={reported.post?.fev1 ?? null}
                       />
                       <GroupRow
-                        label="FEV1/FVC (avg)"
-                        pre={groupAverages.pre?.fev1OverFvc ?? null}
-                        post={groupAverages.post?.fev1OverFvc ?? null}
+                        label="FEV1/FVC"
+                        pre={reported.pre?.fev1OverFvc ?? null}
+                        post={reported.post?.fev1OverFvc ?? null}
                         digits={1}
                         suffix=" %"
                       />
                       <GroupRow
-                        label="Mejor FEV1/FVC"
-                        pre={groupAverages.pre?.bestFev1OverBestFvc ?? null}
-                        post={groupAverages.post?.bestFev1OverBestFvc ?? null}
-                        digits={1}
-                        suffix=" %"
+                        label="PEF"
+                        pre={reported.pre?.pef ?? null}
+                        post={reported.post?.pef ?? null}
+                      />
+                      <GroupRow
+                        label="FEF25"
+                        pre={reported.pre?.fef25 ?? null}
+                        post={reported.post?.fef25 ?? null}
+                      />
+                      <GroupRow
+                        label="FEF50"
+                        pre={reported.pre?.fef50 ?? null}
+                        post={reported.post?.fef50 ?? null}
+                      />
+                      <GroupRow
+                        label="FEF75"
+                        pre={reported.pre?.fef75 ?? null}
+                        post={reported.post?.fef75 ?? null}
+                      />
+                      <GroupRow
+                        label="FEF25-75"
+                        pre={reported.pre?.fef2575 ?? null}
+                        post={reported.post?.fef2575 ?? null}
+                      />
+                      <GroupRow
+                        label="FIF50"
+                        pre={reported.pre?.fif50 ?? null}
+                        post={reported.post?.fif50 ?? null}
                       />
                     </tbody>
                   </table>
+                  {(reported.pre?.fallback || reported.post?.fallback) && (
+                    <p className="text-[10px] text-amber-400 mt-1">
+                      Ninguna maniobra {reported.pre?.fallback ? "PRE" : "POST"} cumple BEV: se usaron todas.
+                    </p>
+                  )}
+                  {(() => {
+                    // Respuesta broncodilatadora (criterio clásico ATS/ERS 2005,
+                    // vigente en manual SER Chile): ≥ 12 % y ≥ 200 mL en FEV1 o FVC.
+                    const bd = (pre?: number | null, post?: number | null) =>
+                      pre != null && post != null && pre > 0
+                        ? { ml: (post - pre) * 1000, pct: ((post - pre) / pre) * 100 }
+                        : null;
+                    const rows = [
+                      ["FEV1", bd(reported.pre?.fev1, reported.post?.fev1)],
+                      ["FVC", bd(reported.pre?.fvc, reported.post?.fvc)],
+                    ] as const;
+                    if (!rows.some(([, d]) => d)) return null;
+                    const sig = rows.some(([, d]) => d && d.ml >= 200 && d.pct >= 12);
+                    return (
+                      <div className="mt-2 text-xs font-mono">
+                        <p className="text-secondary mb-1">Respuesta broncodilatadora</p>
+                        {rows.map(([lbl, d]) =>
+                          d ? (
+                            <p key={lbl} className="flex justify-between">
+                              <span className="text-secondary">Δ {lbl}</span>
+                              <span>
+                                {d.ml >= 0 ? "+" : ""}{d.ml.toFixed(0)} mL ({d.pct >= 0 ? "+" : ""}{d.pct.toFixed(1)} %)
+                              </span>
+                            </p>
+                          ) : null,
+                        )}
+                        <p
+                          className={sig ? "text-emerald-400" : "text-secondary"}
+                          title="≥ 12 % y ≥ 200 mL en FEV1 o FVC (mejor POST vs mejor PRE)"
+                        >
+                          {sig ? "Significativa" : "No significativa"}
+                        </p>
+                      </div>
+                    );
+                  })()}
+                  <details className="mt-2">
+                    <summary className="text-xs text-secondary cursor-pointer select-none">
+                      Promedios de todas las curvas (referencia)
+                    </summary>
+                    <table className="w-full text-xs font-mono mt-1 opacity-80">
+                      <tbody>
+                        <GroupRow
+                          label="n"
+                          pre={groupAverages.pre?.count ?? null}
+                          post={groupAverages.post?.count ?? null}
+                          digits={0}
+                        />
+                        <GroupRow
+                          label="PEF"
+                          pre={groupAverages.pre?.pef ?? null}
+                          post={groupAverages.post?.pef ?? null}
+                        />
+                          <GroupRow
+                          label="FVC"
+                          pre={groupAverages.pre?.fvc ?? null}
+                          post={groupAverages.post?.fvc ?? null}
+                        />
+                          <GroupRow
+                          label="FEV1"
+                          pre={groupAverages.pre?.fev1 ?? null}
+                          post={groupAverages.post?.fev1 ?? null}
+                        />
+                          <GroupRow
+                          label="FEV1/FVC"
+                          pre={groupAverages.pre?.fev1OverFvc ?? null}
+                          post={groupAverages.post?.fev1OverFvc ?? null}
+                          digits={1}
+                          suffix=" %"
+                        />
+                          <GroupRow
+                          label="FEF25"
+                          pre={groupAverages.pre?.fef25 ?? null}
+                          post={groupAverages.post?.fef25 ?? null}
+                        />
+                          <GroupRow
+                          label="FEF50"
+                          pre={groupAverages.pre?.fef50 ?? null}
+                          post={groupAverages.post?.fef50 ?? null}
+                        />
+                          <GroupRow
+                          label="FEF75"
+                          pre={groupAverages.pre?.fef75 ?? null}
+                          post={groupAverages.post?.fef75 ?? null}
+                        />
+                          <GroupRow
+                          label="FEF25-75"
+                          pre={groupAverages.pre?.fef2575 ?? null}
+                          post={groupAverages.post?.fef2575 ?? null}
+                        />
+                          <GroupRow
+                          label="FIF50"
+                          pre={groupAverages.pre?.fif50 ?? null}
+                          post={groupAverages.post?.fif50 ?? null}
+                        />
+                      </tbody>
+                    </table>
+                  </details>
                 </div>
               )}
             </CardContent>
@@ -1377,9 +1520,6 @@ export function SpiroMonitor() {
               <Button onClick={handleCalibrate} disabled={!canCalibrate} variant="secondary">
                 <RefreshCcw className="h-4 w-4 mr-1" />Calibrar
               </Button>
-              <Button onClick={handleClearAll} disabled={!canClear} variant="ghost">
-                <Eraser className="h-4 w-4 mr-1" />Borrar
-              </Button>
               <Button
                 onClick={handleOpenSave}
                 disabled={recordings.length === 0 || isRecording}
@@ -1396,6 +1536,16 @@ export function SpiroMonitor() {
                 <FileText className="h-3.5 w-3.5" />
                 Vista previa informe
               </button>
+              <span className="h-6 w-px bg-surface-700 mx-2" aria-hidden />
+              <Button
+                onClick={handleClearAll}
+                disabled={!canClear}
+                variant="ghost"
+                className="text-red-400 hover:bg-red-500/10"
+                title="Borra todas las pruebas (pide confirmación)"
+              >
+                <Eraser className="h-4 w-4 mr-1" />Borrar todo
+              </Button>
             </CardContent>
           </Card>
         </div>

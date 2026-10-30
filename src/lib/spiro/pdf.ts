@@ -4,7 +4,8 @@ import type { SpiroStudy } from "./types";
 import {
   computeSpiroMetrics,
   averageMetrics,
-  type SpiroGroupAverage,
+  reportedValues,
+  type SpiroMetrics,
 } from "./metrics";
 import { computeQuality, computeSuggestions, type QualityResult } from "./quality";
 
@@ -158,13 +159,10 @@ function drawChartPair(
   return y + targetH + 4;
 }
 
-function drawResultsTable(
-  pdf: jsPDF,
-  y: number,
-  pre: SpiroGroupAverage | null,
-  post: SpiroGroupAverage | null,
-): number {
-  y = drawSectionTitle(pdf, y, "Resultados");
+type ResultRow = [label: string, pre: number | null, post: number | null, digits: number, unit: string];
+
+function drawResultsTable(pdf: jsPDF, y: number, title: string, rows: ResultRow[]): number {
+  y = drawSectionTitle(pdf, y, title);
   const cols = ["Parámetro", "PRE", "POST", "Δ %", "Unidad"];
   const colW = [CONTENT_W * 0.32, CONTENT_W * 0.18, CONTENT_W * 0.18, CONTENT_W * 0.18, CONTENT_W * 0.14];
   const rowH = 6.5;
@@ -186,25 +184,9 @@ function drawResultsTable(
     y += rowH;
   };
 
-  y = ensureSpace(pdf, y, rowH * 9);
+  y = ensureSpace(pdf, y, rowH * (rows.length + 1));
   drawRow(cols, true);
-
-  const params: Array<[string, keyof SpiroGroupAverage, number, string]> = [
-    ["PEF", "pef", 2, "L/s"],
-    ["FVC", "fvc", 2, "L"],
-    ["FEV1", "fev1", 2, "L"],
-    ["FEV1/FVC (avg)", "fev1OverFvc", 1, "%"],
-    ["Mejor FEV1/FVC", "bestFev1OverBestFvc", 1, "%"],
-    ["FEF25", "fef25", 2, "L/s"],
-    ["FEF50", "fef50", 2, "L/s"],
-    ["FEF75", "fef75", 2, "L/s"],
-    ["FIF25", "fif25", 2, "L/s"],
-    ["FIF50", "fif50", 2, "L/s"],
-    ["FIF75", "fif75", 2, "L/s"],
-  ];
-  for (const [label, key, digits, unit] of params) {
-    const preV = (pre?.[key] as number | null | undefined) ?? null;
-    const postV = (post?.[key] as number | null | undefined) ?? null;
+  for (const [label, preV, postV, digits, unit] of rows) {
     drawRow([label, fmt(preV, digits), fmt(postV, digits), pctDelta(preV, postV), unit]);
   }
   return y + 2;
@@ -327,14 +309,19 @@ export function generateSpiroPDF(
   const a = firstLp.markerA;
   const b = firstLp.markerB;
 
-  const preMetrics = preRecs
-    .map((r) => computeSpiroMetrics(r.data, a, b))
-    .filter((m): m is NonNullable<typeof m> => m !== null);
-  const postMetrics = postRecs
-    .map((r) => computeSpiroMetrics(r.data, a, b))
-    .filter((m): m is NonNullable<typeof m> => m !== null);
+  const withMetrics = (recs: typeof preRecs) =>
+    recs.flatMap((r) => {
+      const m = computeSpiroMetrics(r.data, a, b);
+      return m ? [{ number: r.recordingNumber, m }] : [];
+    });
+  const preList = withMetrics(preRecs);
+  const postList = withMetrics(postRecs);
+  const preMetrics: SpiroMetrics[] = preList.map((x) => x.m);
+  const postMetrics: SpiroMetrics[] = postList.map((x) => x.m);
   const preAvg = preMetrics.length > 0 ? averageMetrics(preMetrics) : null;
   const postAvg = postMetrics.length > 0 ? averageMetrics(postMetrics) : null;
+  const preRep = reportedValues(preList);
+  const postRep = reportedValues(postList);
 
   const preCharts = options.charts?.pre;
   const postCharts = options.charts?.post;
@@ -345,13 +332,39 @@ export function generateSpiroPDF(
     y = drawChartPair(pdf, y, "Curvas POST bronco-dilatador", postCharts);
   }
 
-  y = drawResultsTable(pdf, y, preAvg, postAvg);
+  type K = "pef" | "fvc" | "fev1" | "fev1OverFvc" | "fef25" | "fef50" | "fef75" | "fef2575" | "fif25" | "fif50" | "fif75";
+  const params: Array<[string, K, number, string]> = [
+    ["FVC", "fvc", 2, "L"],
+    ["FEV1", "fev1", 2, "L"],
+    ["FEV1/FVC", "fev1OverFvc", 1, "%"],
+    ["PEF", "pef", 2, "L/s"],
+    ["FEF25", "fef25", 2, "L/s"],
+    ["FEF50", "fef50", 2, "L/s"],
+    ["FEF75", "fef75", 2, "L/s"],
+    ["FEF25-75", "fef2575", 2, "L/s"],
+    ["FIF25", "fif25", 2, "L/s"],
+    ["FIF50", "fif50", 2, "L/s"],
+    ["FIF75", "fif75", 2, "L/s"],
+  ];
+  const best = (n: number | null | undefined) => (n != null ? `#${n}` : "—");
+  y = drawResultsTable(
+    pdf,
+    y,
+    `Resultados ATS/ERS (mejor prueba PRE ${best(preRep?.bestTestNumber)} · POST ${best(postRep?.bestTestNumber)})`,
+    params.map(([l, k, d, u]) => [l, preRep?.[k] ?? null, postRep?.[k] ?? null, d, u]),
+  );
+  y = drawResultsTable(
+    pdf,
+    y,
+    "Promedios de todas las curvas (referencia)",
+    params.map(([l, k, d, u]) => [l, preAvg?.[k] ?? null, postAvg?.[k] ?? null, d, u]),
+  );
 
   // Calidad
   const preQuality = computeQuality(preMetrics);
   const postQuality = computeQuality(postMetrics);
-  const preSugs = computeSuggestions(preMetrics, preRecs.map((r) => r.recordingNumber));
-  const postSugs = computeSuggestions(postMetrics, postRecs.map((r) => r.recordingNumber));
+  const preSugs = computeSuggestions(preMetrics, preList.map((x) => x.number));
+  const postSugs = computeSuggestions(postMetrics, postList.map((x) => x.number));
   if (preQuality.nManeuvers >= 2 || postQuality.nManeuvers >= 2) {
     y = drawSectionTitle(pdf, y, "Calidad ATS/ERS");
     y = drawQuality(pdf, y, "PRE", preQuality, preSugs);
