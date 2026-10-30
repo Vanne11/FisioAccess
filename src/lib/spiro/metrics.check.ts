@@ -1,6 +1,9 @@
 // Self-check: `npx tsx src/lib/spiro/metrics.check.ts`
 import { closeInspLimb, computeSpiroMetrics, reportedValues, type SpiroMetrics } from "./metrics";
 import { computeQuality } from "./quality";
+import { gliGlobal, interpretZ, zScore } from "./gli";
+import { suggestAnalysis } from "./interpretation";
+import { emptyPatient } from "./types";
 import type { SpiroPoint } from "@/components/shared/SpiroCharts";
 
 function assert(cond: boolean, msg = "check failed") {
@@ -53,5 +56,26 @@ const q = computeQuality([mk(4.0, 3.0, 5, 0), mk(3.9, 2.9, 5, 0), mk(3.8, 2.85, 
 assert(q.grade === "A" && q.fev1RepMl! < 101, "3 aceptables a ≤150 mL → A");
 assert(computeQuality([mk(4.0, 3.0, 5, 0), mk(3.7, 3.0, 5, 0)]).grade === "E", "ΔFVC 300 mL → E");
 assert(computeQuality([mk(4.0, 3.0, 5, 0.5)]).grade === "F", "ninguna aceptable → F");
+
+// GLI Global 2022: consistencia LMS (z(teórico) = 0, z(LIN) = −1.645) y
+// valor fijado (hombre 40 a, 175 cm) para detectar cambios en tablas/coef.
+for (const k of ["fev1", "fvc", "fev1fvc"] as const) {
+  const g = gliGlobal(k, 1, 40, 175)!;
+  assert(Math.abs(zScore(g.pred, g)) < 1e-9, `z(teórico) ${k}`);
+  assert(Math.abs(zScore(g.lln, g) + 1.645) < 1e-9, `z(LIN) ${k}`);
+}
+assert(Math.abs(gliGlobal("fev1", 1, 40, 175)!.pred - 3.835) < 0.001, "FEV1 teórico H 40 a 175 cm");
+assert(gliGlobal("fev1", 1, 2, 100) === null && gliGlobal("fev1", 2, 96, 160) === null, "fuera de 3–95 años");
+assert(interpretZ(-2, -1, -2) === "Obstrucción leve" && interpretZ(0, 0, 0) === "Dentro de límites normales");
+
+// Patrones ATS/ERS 2022 y texto sugerido.
+assert(interpretZ(-3, -2, -2).startsWith("Obstrucción moderada con FVC disminuida"), "mixto");
+assert(interpretZ(-2, -2, 0).startsWith("Patrón restrictivo posible"), "restricción");
+assert(interpretZ(-2, -1, 0).includes("PRISm"), "PRISm");
+const pat = { ...emptyPatient(), sexo: "Masculino" as const, fechaNacimiento: "1985-01-01", estaturaCm: 175 };
+const rep = (fev1: number, fvc: number) => ({ ...reportedValues([{ number: 1, m: mk(fvc, fev1, 6, 0) }])! });
+const qa = computeQuality([mk(4.0, 3.0, 5, 0), mk(3.9, 2.9, 5, 0), mk(3.8, 2.85, 5, 0)]);
+const sa = suggestAnalysis(pat, new Date("2026-10-30"), { reported: rep(2.4, 4.5), quality: qa }, { reported: rep(2.9, 4.6), quality: qa });
+assert(sa.conclusion.includes("obstrucción") && sa.conclusion.includes("significativa"), sa.conclusion);
 
 console.log("ok");

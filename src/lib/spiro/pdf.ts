@@ -3,11 +3,12 @@ import type { ReportConfig } from "@/stores/useReportStore";
 import type { SpiroStudy } from "./types";
 import {
   computeSpiroMetrics,
-  averageMetrics,
   reportedValues,
   type SpiroMetrics,
+  type SpiroReported,
 } from "./metrics";
 import { computeQuality, computeSuggestions, type QualityResult } from "./quality";
+import { gliForPatient, interpretZ, zScore, type GliParam, type GliSet } from "./gli";
 
 export interface SpiroChartImages {
   /** PNG dataURL del canvas Volumen/Tiempo */
@@ -161,12 +162,16 @@ function drawChartPair(
 
 type ResultRow = [label: string, pre: number | null, post: number | null, digits: number, unit: string];
 
-function drawResultsTable(pdf: jsPDF, y: number, title: string, rows: ResultRow[]): number {
+function drawTable(
+  pdf: jsPDF,
+  y: number,
+  title: string,
+  cols: string[],
+  colFrac: number[],
+  rows: string[][],
+): number {
   y = drawSectionTitle(pdf, y, title);
-  const cols = ["Parámetro", "PRE", "POST", "Δ %", "Unidad"];
-  const colW = [CONTENT_W * 0.32, CONTENT_W * 0.18, CONTENT_W * 0.18, CONTENT_W * 0.18, CONTENT_W * 0.14];
   const rowH = 6.5;
-
   const drawRow = (cells: string[], header = false) => {
     if (header) {
       pdf.setFillColor(C.headerBg[0], C.headerBg[1], C.headerBg[2]);
@@ -178,18 +183,82 @@ function drawResultsTable(pdf: jsPDF, y: number, title: string, rows: ResultRow[
     let x = MARGIN + 1.5;
     for (let i = 0; i < cells.length; i++) {
       pdf.text(cells[i], x, y);
-      x += colW[i];
+      x += CONTENT_W * colFrac[i];
     }
     hr(pdf, y + 1.5);
     y += rowH;
   };
-
   y = ensureSpace(pdf, y, rowH * (rows.length + 1));
   drawRow(cols, true);
-  for (const [label, preV, postV, digits, unit] of rows) {
-    drawRow([label, fmt(preV, digits), fmt(postV, digits), pctDelta(preV, postV), unit]);
-  }
+  for (const r of rows) drawRow(r);
   return y + 2;
+}
+
+function drawResultsTable(pdf: jsPDF, y: number, title: string, rows: ResultRow[]): number {
+  return drawTable(
+    pdf,
+    y,
+    title,
+    ["Parámetro", "PRE", "POST", "Δ %", "Unidad"],
+    [0.32, 0.18, 0.18, 0.18, 0.14],
+    rows.map(([label, preV, postV, digits, unit]) => [
+      label,
+      fmt(preV, digits),
+      fmt(postV, digits),
+      pctDelta(preV, postV),
+      unit,
+    ]),
+  );
+}
+
+function drawGliTable(
+  pdf: jsPDF,
+  y: number,
+  gli: GliSet,
+  pre: SpiroReported | null,
+  post: SpiroReported | null,
+): number {
+  const obs = (r: SpiroReported | null): Record<GliParam, number | null> => ({
+    fev1: r?.fev1 ?? null,
+    fvc: r?.fvc ?? null,
+    fev1fvc: r?.fev1OverFvc != null ? r.fev1OverFvc / 100 : null,
+  });
+  const o = { pre: obs(pre), post: obs(post) };
+  const cell = (v: number | null, k: GliParam) =>
+    v === null ? "—" : `${((v / gli[k].pred) * 100).toFixed(0)} %  (z ${zScore(v, gli[k]).toFixed(2)})`;
+  const params: Array<[string, GliParam, string]> = [
+    ["FEV1", "fev1", "L"],
+    ["FVC", "fvc", "L"],
+    ["FEV1/FVC", "fev1fvc", ""],
+  ];
+  y = drawTable(
+    pdf,
+    y,
+    "Valores teóricos GLI Global 2022",
+    ["Parámetro", "Teórico", "LIN", "PRE % teór (z)", "POST % teór (z)"],
+    [0.18, 0.15, 0.15, 0.26, 0.26],
+    params.map(([lbl, k, u]) => [
+      lbl,
+      `${gli[k].pred.toFixed(2)} ${u}`,
+      `${gli[k].lln.toFixed(2)} ${u}`,
+      cell(o.pre[k], k),
+      cell(o.post[k], k),
+    ]),
+  );
+  for (const [g, x] of [["PRE", o.pre], ["POST", o.post]] as const) {
+    if (x.fev1 === null || x.fvc === null || x.fev1fvc === null) continue;
+    const lines: string[] = pdf.splitTextToSize(
+      `${g}: ${interpretZ(zScore(x.fev1, gli.fev1), zScore(x.fvc, gli.fvc), zScore(x.fev1fvc, gli.fev1fvc))}`,
+      CONTENT_W,
+    );
+    y = ensureSpace(pdf, y, lines.length * 4.5);
+    setText(pdf, C.text, 9, false);
+    pdf.text(lines, MARGIN, y);
+    y += lines.length * 4.5 + 0.5;
+  }
+  setText(pdf, C.muted, 7, false);
+  pdf.text("LIN = percentil 5 (z -1.645). Bowerman et al. AJRCCM 2023. Interpretación ATS/ERS 2022.", MARGIN, y);
+  return y + 5;
 }
 
 function drawQuality(
@@ -319,8 +388,6 @@ export function generateSpiroPDF(
   const postList = withMetrics(postRecs);
   const preMetrics: SpiroMetrics[] = preList.map((x) => x.m);
   const postMetrics: SpiroMetrics[] = postList.map((x) => x.m);
-  const preAvg = preMetrics.length > 0 ? averageMetrics(preMetrics) : null;
-  const postAvg = postMetrics.length > 0 ? averageMetrics(postMetrics) : null;
   const preRep = reportedValues(preList);
   const postRep = reportedValues(postList);
 
@@ -354,12 +421,8 @@ export function generateSpiroPDF(
     `Resultados ATS/ERS (mejor prueba PRE ${best(preRep?.bestTestNumber)} · POST ${best(postRep?.bestTestNumber)})`,
     params.map(([l, k, d, u]) => [l, preRep?.[k] ?? null, postRep?.[k] ?? null, d, u]),
   );
-  y = drawResultsTable(
-    pdf,
-    y,
-    "Promedios de todas las curvas (referencia)",
-    params.map(([l, k, d, u]) => [l, preAvg?.[k] ?? null, postAvg?.[k] ?? null, d, u]),
-  );
+  const gli = gliForPatient(study.patient, new Date(study.timestamp));
+  if (gli && (preRep || postRep)) y = drawGliTable(pdf, y, gli, preRep, postRep);
 
   // Calidad
   const preQuality = computeQuality(preMetrics);

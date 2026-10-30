@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
-import { X, Save as SaveIcon } from "lucide-react";
+import { X, Save as SaveIcon, Sparkles } from "lucide-react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/Button";
 import {
   type SpiroPatient,
@@ -20,6 +21,8 @@ interface Props {
   initialPatient?: SpiroPatient;
   initialAnalysis?: SpiroAnalysis;
   recordingsCount: number;
+  /** Genera interpretación/conclusión sugeridas con los datos del paciente. */
+  suggest?: (patient: SpiroPatient) => SpiroAnalysis;
 }
 
 const SEXES: Sex[] = ["Masculino", "Femenino", "Otro"];
@@ -55,6 +58,7 @@ export function SpiroSaveDialog({
   initialPatient,
   initialAnalysis,
   recordingsCount,
+  suggest,
 }: Props) {
   const [patient, setPatient] = useState<SpiroPatient>(initialPatient ?? emptyPatient());
   const [analysis, setAnalysis] = useState<SpiroAnalysis>(initialAnalysis ?? emptyAnalysis());
@@ -84,6 +88,20 @@ export function SpiroSaveDialog({
   }, [errors]);
 
   if (!open) return null;
+
+  const handleSuggest = async () => {
+    if (!suggest) return;
+    if (analysis.interpretacion.trim() || analysis.conclusion.trim()) {
+      const ok = await ask("Se reemplazará el texto actual de Interpretación y Conclusión.", {
+        title: "Generar análisis",
+        kind: "warning",
+        okLabel: "Reemplazar",
+        cancelLabel: "Cancelar",
+      });
+      if (!ok) return;
+    }
+    setAnalysis(suggest(patient));
+  };
 
   const handleSubmit = async () => {
     if (errors.length > 0) {
@@ -173,7 +191,7 @@ export function SpiroSaveDialog({
                   min={0}
                   max={150}
                   className={inputCls}
-                  value={patient.edad}
+                  value={patient.edad || ""}
                   onChange={(e) => {
                     const n = parseInt(e.target.value, 10);
                     setPatient({ ...patient, edad: Number.isFinite(n) ? n : 0 });
@@ -199,7 +217,7 @@ export function SpiroSaveDialog({
                   min={50}
                   max={250}
                   className={inputCls}
-                  value={patient.estaturaCm}
+                  value={patient.estaturaCm || ""}
                   onChange={(e) => {
                     const n = parseInt(e.target.value, 10);
                     setPatient({ ...patient, estaturaCm: Number.isFinite(n) ? n : 0 });
@@ -213,7 +231,7 @@ export function SpiroSaveDialog({
                   max={300}
                   step={0.1}
                   className={inputCls}
-                  value={patient.pesoKg}
+                  value={patient.pesoKg || ""}
                   onChange={(e) => {
                     const n = parseFloat(e.target.value);
                     setPatient({ ...patient, pesoKg: Number.isFinite(n) ? n : 0 });
@@ -233,14 +251,27 @@ export function SpiroSaveDialog({
           </section>
 
           <section>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-secondary mb-2">
-              Análisis clínico
-            </h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-secondary">
+                Análisis clínico
+              </h3>
+              {suggest && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleSuggest}
+                  title="Propuesta según ATS/ERS 2022 y GLI Global (usa sexo, fecha de nacimiento y estatura). Revísela antes de guardar."
+                >
+                  <Sparkles className="h-3.5 w-3.5 mr-1" />
+                  Generar automáticamente
+                </Button>
+              )}
+            </div>
             <div className="grid grid-cols-1 gap-3">
               <Field label="Interpretación *" error={errorByField.interpretacion}>
                 <textarea
                   className={inputCls}
-                  rows={3}
+                  rows={6}
                   value={analysis.interpretacion}
                   onChange={(e) => setAnalysis({ ...analysis, interpretacion: e.target.value })}
                   placeholder="Patrón obstructivo / restrictivo / mixto / normal..."

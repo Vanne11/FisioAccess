@@ -44,6 +44,8 @@ import {
   type QualitySuggestion,
 } from "@/lib/spiro/quality";
 import { generateSpiroPDF } from "@/lib/spiro/pdf";
+import { gliForPatient, interpretZ, zScore, type GliSet } from "@/lib/spiro/gli";
+import { bdResponse, suggestAnalysis } from "@/lib/spiro/interpretation";
 import { useWorkspaceStore } from "@/stores/useWorkspaceStore";
 import { useReportStore } from "@/stores/useReportStore";
 
@@ -165,6 +167,79 @@ function GroupRow({
       <td className="text-right pr-1 text-sky-300">{fmt(pre)}</td>
       <td className="text-right text-amber-300">{fmt(post)}</td>
     </tr>
+  );
+}
+
+/** Teóricos GLI Global 2022: teórico, LIN y, por grupo, % teórico y z. */
+function GliBlock({
+  gli,
+  pre,
+  post,
+}: {
+  gli: GliSet;
+  pre: SpiroReported | null;
+  post: SpiroReported | null;
+}) {
+  const obs = (r: SpiroReported | null) => ({
+    fev1: r?.fev1 ?? null,
+    fvc: r?.fvc ?? null,
+    fev1fvc: r?.fev1OverFvc != null ? r.fev1OverFvc / 100 : null,
+  });
+  const o = { pre: obs(pre), post: obs(post) };
+  const rows = [
+    ["FEV1", "fev1", 2],
+    ["FVC", "fvc", 2],
+    ["FEV1/FVC", "fev1fvc", 2],
+  ] as const;
+  const cell = (v: number | null, k: keyof GliSet) => {
+    if (v === null) return <td className="text-right pr-1">—</td>;
+    const z = zScore(v, gli[k]);
+    return (
+      <td className={`text-right pr-1 ${z < -1.645 ? "text-red-400" : ""}`} title={`z = ${z.toFixed(2)}`}>
+        {((v / gli[k].pred) * 100).toFixed(0)}% <span className="text-secondary">{z.toFixed(1)}</span>
+      </td>
+    );
+  };
+  const interp = (g: typeof o.pre) =>
+    g.fev1 !== null && g.fvc !== null && g.fev1fvc !== null
+      ? interpretZ(zScore(g.fev1, gli.fev1), zScore(g.fvc, gli.fvc), zScore(g.fev1fvc, gli.fev1fvc))
+      : null;
+  return (
+    <div className="mt-3 pt-3 border-t border-surface-700">
+      <p className="text-sm font-medium text-secondary mb-2" title="Bowerman et al. AJRCCM 2023. LIN = percentil 5 (z −1.645)">
+        Teóricos GLI Global 2022
+      </p>
+      <table className="w-full text-xs font-mono">
+        <thead>
+          <tr className="text-secondary">
+            <th className="text-left font-normal"></th>
+            <th className="text-right font-normal pr-1">Teór</th>
+            <th className="text-right font-normal pr-1">LIN</th>
+            <th className="text-right font-normal pr-1 text-sky-300">PRE %·z</th>
+            <th className="text-right font-normal text-amber-300">POST %·z</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([lbl, k, d]) => (
+            <tr key={k}>
+              <td className="text-secondary">{lbl}</td>
+              <td className="text-right pr-1">{gli[k].pred.toFixed(d)}</td>
+              <td className="text-right pr-1">{gli[k].lln.toFixed(d)}</td>
+              {cell(o.pre[k], k)}
+              {cell(o.post[k], k)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {[["PRE", interp(o.pre)], ["POST", interp(o.post)]].map(([g, txt]) =>
+        txt ? (
+          <p key={g} className="text-xs mt-1">
+            <span className="text-secondary">{g}: </span>
+            {txt}
+          </p>
+        ) : null,
+      )}
+    </div>
   );
 }
 
@@ -994,6 +1069,10 @@ export function SpiroMonitor() {
     () => ({ pre: groupAnalysis.pre.avg, post: groupAnalysis.post.avg }),
     [groupAnalysis],
   );
+  const gli = useMemo(
+    () => (studyPatient ? gliForPatient(studyPatient, new Date()) : null),
+    [studyPatient],
+  );
   const reported = useMemo(
     () => ({ pre: groupAnalysis.pre.reported, post: groupAnalysis.post.reported }),
     [groupAnalysis],
@@ -1336,18 +1415,9 @@ export function SpiroMonitor() {
                     </p>
                   )}
                   {(() => {
-                    // Respuesta broncodilatadora (criterio clásico ATS/ERS 2005,
-                    // vigente en manual SER Chile): ≥ 12 % y ≥ 200 mL en FEV1 o FVC.
-                    const bd = (pre?: number | null, post?: number | null) =>
-                      pre != null && post != null && pre > 0
-                        ? { ml: (post - pre) * 1000, pct: ((post - pre) / pre) * 100 }
-                        : null;
-                    const rows = [
-                      ["FEV1", bd(reported.pre?.fev1, reported.post?.fev1)],
-                      ["FVC", bd(reported.pre?.fvc, reported.post?.fvc)],
-                    ] as const;
-                    if (!rows.some(([, d]) => d)) return null;
-                    const sig = rows.some(([, d]) => d && d.ml >= 200 && d.pct >= 12);
+                    const bd = bdResponse(reported.pre, reported.post, gli);
+                    if (!bd) return null;
+                    const rows = [["FEV1", bd.fev1], ["FVC", bd.fvc]] as const;
                     return (
                       <div className="mt-2 text-xs font-mono">
                         <p className="text-secondary mb-1">Respuesta broncodilatadora</p>
@@ -1357,15 +1427,22 @@ export function SpiroMonitor() {
                               <span className="text-secondary">Δ {lbl}</span>
                               <span>
                                 {d.ml >= 0 ? "+" : ""}{d.ml.toFixed(0)} mL ({d.pct >= 0 ? "+" : ""}{d.pct.toFixed(1)} %)
+                                {d.pctPred !== null && (
+                                  <span className="text-secondary"> · {d.pctPred.toFixed(1)} % teór.</span>
+                                )}
                               </span>
                             </p>
                           ) : null,
                         )}
                         <p
-                          className={sig ? "text-emerald-400" : "text-secondary"}
-                          title="≥ 12 % y ≥ 200 mL en FEV1 o FVC (mejor POST vs mejor PRE)"
+                          className={bd.significant ? "text-emerald-400" : "text-secondary"}
+                          title={
+                            bd.criterion === "ATS/ERS 2022"
+                              ? "ATS/ERS 2022: Δ > 10 % del teórico GLI en FEV1 o FVC"
+                              : "ATS/ERS 2005: ≥ 12 % y ≥ 200 mL en FEV1 o FVC (sin datos de paciente para el criterio 2022)"
+                          }
                         >
-                          {sig ? "Significativa" : "No significativa"}
+                          {bd.significant ? "Significativa" : "No significativa"} ({bd.criterion})
                         </p>
                       </div>
                     );
@@ -1433,6 +1510,9 @@ export function SpiroMonitor() {
                     </table>
                   </details>
                 </div>
+              )}
+              {gli && (reported.pre || reported.post) && (
+                <GliBlock gli={gli} pre={reported.pre} post={reported.post} />
               )}
             </CardContent>
           </Card>
@@ -1561,6 +1641,7 @@ export function SpiroMonitor() {
         initialPatient={studyPatient}
         initialAnalysis={studyAnalysis}
         recordingsCount={recordings.length}
+        suggest={(p) => suggestAnalysis(p, new Date(), groupAnalysis.pre, groupAnalysis.post)}
       />
 
       {/* Chart oculto fuera de pantalla — se monta durante el guardado
