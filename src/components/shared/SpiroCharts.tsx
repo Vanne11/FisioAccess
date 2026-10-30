@@ -93,6 +93,7 @@ const COLOR_ANCHOR = "#fb923c";     // naranja — anclas PEF y FVC
 const COLOR_EXP_LABEL = "#3b82f6";
 const COLOR_INSP_LABEL = "#ef4444";
 const COLOR_MARKER_A = "#ef4444"; // rojo
+const COLOR_FEV1 = "#facc15";     // amarillo — FEV1 automático
 const COLOR_MARKER_B = "#10b981"; // verde
 const COLOR_MARKER_DIFF = "#22d3ee"; // cyan
 
@@ -474,6 +475,14 @@ export function SpiroCharts({
     return list;
   }, [shiftedCurrent, shiftedRecordings]);
 
+  // Fin real de las curvas: límite de arrastre de los cursores. No se usa
+  // vtView (que se expande con los propios cursores) para no realimentar.
+  const dataTMax = useMemo(() => {
+    let m = -Infinity;
+    for (const pts of allCurves) for (const p of pts) if (p.t > m) m = p.t;
+    return Number.isFinite(m) ? m : VT_T_FALLBACK_MAX;
+  }, [allCurves]);
+
   const vtView = useMemo<VtView>(() => {
     let tMin = Infinity;
     let tMax = -Infinity;
@@ -667,6 +676,31 @@ export function SpiroCharts({
       ctx.beginPath();
       ctx.rect(MARGIN_LEFT, MARGIN_TOP, plotW, plotH);
       ctx.clip();
+
+      // FEV1 automático: t' = 0 es el time-zero back-extrapolado, así que
+      // FEV1 = V(1 s). Línea fija, no arrastrable.
+      const fev1 = yAtX(shiftedCurrent, 1);
+      if (fev1 !== null) {
+        const px = xToPx(1);
+        const py = yToPx(fev1);
+        ctx.strokeStyle = COLOR_FEV1;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(px, yToPx(0));
+        ctx.lineTo(px, py);
+        ctx.lineTo(MARGIN_LEFT, py);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = COLOR_FEV1;
+        ctx.beginPath();
+        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = "bold 10px monospace";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(`FEV1 ${fev1.toFixed(2)} L`, px + 5, py - 3);
+      }
 
       const markers: Array<{ x: number; color: string; label: "A" | "B" }> = [
         { x: markerLines.a, color: COLOR_MARKER_A, label: "A" },
@@ -971,8 +1005,11 @@ export function SpiroCharts({
     if (dragging) {
       const clamped = Math.max(0, m.v);
       if (dragging === "fvc") {
-        // FVC siempre a la derecha de PEF (con un pequeño margen)
-        setFvcOverride(Math.max(pefVol + 0.05, clamped));
+        // FVC entre PEF (+ margen) y el volumen máximo real de la curva.
+        // Sin tope superior el autoscale se expande con la línea y ésta
+        // se escapa hacia la derecha.
+        const vMaxCurve = autoFvc ?? fvcVol;
+        setFvcOverride(Math.min(vMaxCurve, Math.max(pefVol + 0.05, clamped)));
       } else {
         // PEF a la izquierda de FVC
         setPefOverride(Math.max(0, Math.min(fvcVol - 0.05, clamped)));
@@ -981,7 +1018,7 @@ export function SpiroCharts({
     }
     const key = findNearestLine(m.v, m.pxPerL);
     setFvCursor(key !== null ? "ew-resize" : "default");
-  }, [fvFromMouse, findNearestLine, fvcVol, pefVol]);
+  }, [fvFromMouse, findNearestLine, fvcVol, pefVol, autoFvc]);
 
   const handleFVUp = useCallback(() => {
     fvDragRef.current = null;
@@ -1025,7 +1062,7 @@ export function SpiroCharts({
     const m = vtFromMouse(e);
     if (!m) return;
     if (vtDragRef.current) {
-      const clamped = Math.max(vtView.tMin, Math.min(vtView.tMax, m.t));
+      const clamped = Math.max(0, Math.min(dataTMax, m.t));
       if (vtDragRef.current.which === "a") {
         onMarkerLinesChange({ a: clamped, b: markerLines.b });
       } else {
@@ -1039,7 +1076,7 @@ export function SpiroCharts({
     } else {
       setVtCursor("default");
     }
-  }, [markerLines, vtFromMouse, onMarkerLinesChange, vtView]);
+  }, [markerLines, vtFromMouse, onMarkerLinesChange, dataTMax]);
 
   const handleVTUp = useCallback(() => {
     vtDragRef.current = null;
