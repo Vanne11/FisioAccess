@@ -23,6 +23,8 @@ interface Props {
   recordingsCount: number;
   /** Genera interpretación/conclusión sugeridas con los datos del paciente. */
   suggest?: (patient: SpiroPatient) => SpiroAnalysis;
+  /** Solo datos del paciente (al iniciar el examen): sin análisis clínico. */
+  patientOnly?: boolean;
 }
 
 const SEXES: Sex[] = ["Masculino", "Femenino", "Otro"];
@@ -59,6 +61,7 @@ export function SpiroSaveDialog({
   initialAnalysis,
   recordingsCount,
   suggest,
+  patientOnly = false,
 }: Props) {
   const [patient, setPatient] = useState<SpiroPatient>(initialPatient ?? emptyPatient());
   const [analysis, setAnalysis] = useState<SpiroAnalysis>(initialAnalysis ?? emptyAnalysis());
@@ -80,7 +83,13 @@ export function SpiroSaveDialog({
     }
   }, [patient.fechaNacimiento]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const errors = useMemo(() => validateStudy(patient, analysis), [patient, analysis]);
+  const errors = useMemo(
+    () =>
+      validateStudy(patient, analysis).filter(
+        (e) => !patientOnly || (e.field !== "interpretacion" && e.field !== "conclusion"),
+      ),
+    [patient, analysis, patientOnly],
+  );
   const errorByField = useMemo(() => {
     const m: Record<string, string> = {};
     for (const e of errors) m[e.field] = e.message;
@@ -128,11 +137,13 @@ export function SpiroSaveDialog({
           <div className="flex items-center gap-2">
             <SaveIcon className="h-4 w-4 text-spiro-400" />
             <span className="text-sm font-medium text-primary">
-              Guardar estudio espirométrico
+              {patientOnly ? "Datos del paciente" : "Guardar estudio espirométrico"}
             </span>
-            <span className="text-xs text-secondary">
-              ({recordingsCount} {recordingsCount === 1 ? "maniobra" : "maniobras"})
-            </span>
+            {!patientOnly && (
+              <span className="text-xs text-secondary">
+                ({recordingsCount} {recordingsCount === 1 ? "maniobra" : "maniobras"})
+              </span>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -250,6 +261,7 @@ export function SpiroSaveDialog({
             </div>
           </section>
 
+          {!patientOnly && (
           <section>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-[11px] font-semibold uppercase tracking-wide text-secondary">
@@ -288,6 +300,7 @@ export function SpiroSaveDialog({
               </Field>
             </div>
           </section>
+          )}
 
           {globalError && (
             <p className="text-xs text-red-400">{globalError}</p>
@@ -302,10 +315,10 @@ export function SpiroSaveDialog({
             variant="primary"
             size="sm"
             onClick={handleSubmit}
-            disabled={saving || errors.length > 0 || recordingsCount === 0}
+            disabled={saving || errors.length > 0 || (!patientOnly && recordingsCount === 0)}
           >
             <SaveIcon className="h-4 w-4 mr-1" />
-            {saving ? "Guardando..." : "Guardar estudio"}
+            {patientOnly ? "Continuar" : saving ? "Guardando..." : "Guardar estudio"}
           </Button>
         </div>
       </div>

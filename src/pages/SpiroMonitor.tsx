@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Wind, Trash2, FileText, FolderOpen, Eraser, Play, RefreshCcw, FileSignature, FlaskConical } from "lucide-react";
+import { Wind, User, Trash2, FileText, FolderOpen, Eraser, Play, RefreshCcw, FileSignature, FlaskConical } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { save as saveDialog, open as openDialog, ask } from "@tauri-apps/plugin-dialog";
@@ -311,6 +311,8 @@ export function SpiroMonitor() {
   // Datos del estudio en memoria (paciente + análisis) para reutilizar
   // entre Guardar y Vista previa, y para conservar lo escrito al recargar.
   const [studyPatient, setStudyPatient] = useState<SpiroPatient | undefined>();
+  // Diálogo de paciente: "start" inicia el examen al confirmar; "edit" solo edita.
+  const [patientDialog, setPatientDialog] = useState<null | "start" | "edit">(null);
   const [studyAnalysis, setStudyAnalysis] = useState<SpiroAnalysis | undefined>();
   const [saveOpen, setSaveOpen] = useState(false);
   const workDir = useWorkspaceStore((s) => s.workDir);
@@ -1092,7 +1094,20 @@ export function SpiroMonitor() {
       <PageHeader
         title="Espirómetro"
         icon={<Wind className="h-5 w-5 text-spiro-400" />}
-        actions={<StatusBadge status={status} />}
+        actions={
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPatientDialog("edit")}
+              disabled={isRecording}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-border hover:bg-surface-800 disabled:opacity-40 transition-colors"
+              title="Datos del paciente (sexo, fecha de nacimiento y estatura se usan para los teóricos GLI)"
+            >
+              <User className="h-3.5 w-3.5" />
+              {studyPatient?.nombre || "Sin paciente"}
+            </button>
+            <StatusBadge status={status} />
+          </div>
+        }
       />
 
       {/* Toolbar superior */}
@@ -1588,7 +1603,11 @@ export function SpiroMonitor() {
           {/* Controles inferiores: compactos, integrados al chart card */}
           <Card className="shrink-0">
             <CardContent className="flex flex-wrap items-center gap-2 py-2">
-              <Button onClick={handleStart} disabled={!canStart} variant="primary">
+              <Button
+                onClick={() => (studyPatient ? handleStart() : setPatientDialog("start"))}
+                disabled={!canStart}
+                variant="primary"
+              >
                 <Play className="h-4 w-4 mr-1" />Iniciar
               </Button>
               <Button
@@ -1634,6 +1653,17 @@ export function SpiroMonitor() {
       </div>
 
       <ReportPreview open={reportOpen} onClose={() => setReportOpen(false)} report={spiroReport} />
+      <SpiroSaveDialog
+        open={patientDialog !== null}
+        patientOnly
+        onClose={() => setPatientDialog(null)}
+        onSave={(p) => {
+          setStudyPatient(p);
+          if (patientDialog === "start") void handleStart();
+        }}
+        initialPatient={studyPatient}
+        recordingsCount={recordings.length}
+      />
       <SpiroSaveDialog
         open={saveOpen}
         onClose={() => setSaveOpen(false)}
