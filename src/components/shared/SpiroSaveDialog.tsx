@@ -11,6 +11,8 @@ import {
   emptyPatient,
   emptyAnalysis,
   computeAgeFromBirth,
+  dmyToIso,
+  isoToDmy,
   validateStudy,
 } from "@/lib/spiro/types";
 
@@ -65,12 +67,15 @@ export function SpiroSaveDialog({
 }: Props) {
   const [patient, setPatient] = useState<SpiroPatient>(initialPatient ?? emptyPatient());
   const [analysis, setAnalysis] = useState<SpiroAnalysis>(initialAnalysis ?? emptyAnalysis());
+  // Texto libre "dd/mm/aaaa"; patient.fechaNacimiento guarda ISO solo si es válida.
+  const [birthText, setBirthText] = useState("");
   const [saving, setSaving] = useState(false);
   const [globalError, setGlobalError] = useState("");
 
   useEffect(() => {
     if (open) {
       setPatient(initialPatient ?? emptyPatient());
+      setBirthText(isoToDmy(initialPatient?.fechaNacimiento ?? ""));
       setAnalysis(initialAnalysis ?? emptyAnalysis());
       setGlobalError("");
     }
@@ -188,12 +193,24 @@ export function SpiroSaveDialog({
                   ))}
                 </select>
               </Field>
-              <Field label="Fecha de nacimiento">
+              <Field
+                label="Fecha de nacimiento"
+                error={birthText.length === 10 && !patient.fechaNacimiento ? "Fecha no válida" : undefined}
+              >
                 <input
-                  type="date"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="dd/mm/aaaa"
+                  maxLength={10}
                   className={inputCls}
-                  value={patient.fechaNacimiento}
-                  onChange={(e) => setPatient({ ...patient, fechaNacimiento: e.target.value })}
+                  value={birthText}
+                  onChange={(e) => {
+                    // Solo dígitos; las barras se insertan solas al escribir.
+                    const d = e.target.value.replace(/\D/g, "").slice(0, 8);
+                    const text = [d.slice(0, 2), d.slice(2, 4), d.slice(4)].filter(Boolean).join("/");
+                    setBirthText(text);
+                    setPatient({ ...patient, fechaNacimiento: dmyToIso(text) ?? "" });
+                  }}
                 />
               </Field>
               <Field label="Edad (años)">

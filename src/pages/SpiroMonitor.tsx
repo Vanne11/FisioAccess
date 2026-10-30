@@ -656,9 +656,13 @@ export function SpiroMonitor() {
   }, [recordings.length, maxRecordings, recordingSecs]);
 
   const handleClearAll = useCallback(async () => {
-    if (recordings.length > 0) {
+    if (recordings.length > 0 || studyPatient) {
+      const what = [
+        recordings.length > 0 ? `las ${recordings.length} pruebas registradas` : null,
+        studyPatient ? `los datos del paciente${studyPatient.nombre ? ` (${studyPatient.nombre})` : ""}` : null,
+      ].filter(Boolean).join(" y ");
       const ok = await ask(
-        `Se borrarán las ${recordings.length} pruebas registradas. Esta acción no se puede deshacer.`,
+        `Se borrarán ${what}. Esta acción no se puede deshacer.`,
         { title: "Borrar todos los registros", kind: "warning", okLabel: "Borrar todo", cancelLabel: "Cancelar" },
       );
       if (!ok) return;
@@ -673,7 +677,10 @@ export function SpiroMonitor() {
     clearArmFallback();
     setDisplayMode("idle");
     if (fsm === "recording") setFsm("calibrated");
-  }, [fsm, recordings.length]);
+    // Nuevo examen: el paciente y su análisis no deben pasar al siguiente.
+    setStudyPatient(undefined);
+    setStudyAnalysis(undefined);
+  }, [fsm, recordings.length, studyPatient]);
 
   const handleDeleteRec = useCallback((id: number) => {
     setRecordings((prev) => prev.filter((r) => r.id !== id));
@@ -903,7 +910,8 @@ export function SpiroMonitor() {
 
   const canStart = isConnected && isCalibrated && !isRecording;
   const canCalibrate = isConnected && !isRecording;
-  const canClear = isConnected && !isRecording;
+  // Borrar no usa el equipo: basta con que haya datos o paciente y no se esté grabando.
+  const canClear = (recordings.length > 0 || displayData.length > 0 || !!studyPatient) && !isRecording;
   const canSelectPort = !serial.isConnected && !isRecording;
 
   // ─── Vista previa de informe ────────────────────────────────────
@@ -1643,7 +1651,7 @@ export function SpiroMonitor() {
                 disabled={!canClear}
                 variant="ghost"
                 className="text-red-400 hover:bg-red-500/10"
-                title="Borra todas las pruebas (pide confirmación)"
+                title="Borra todas las pruebas y los datos del paciente (pide confirmación)"
               >
                 <Eraser className="h-4 w-4 mr-1" />Borrar todo
               </Button>

@@ -1,5 +1,5 @@
 import { GLI_AGE_MIN, GLI_AGE_STEP, GLI_GLOBAL_SPLINES } from "./gliGlobalData";
-import type { SpiroPatient } from "./types";
+import { parseIsoDate, type SpiroPatient } from "./types";
 
 /**
  * Valores teóricos GLI Global 2022 (race-neutral), método LMS:
@@ -68,8 +68,8 @@ export function zScore(obs: number, r: GliRef): number {
 
 /** Edad decimal a la fecha `at` (GLI usa edad con decimales). */
 export function decimalAge(birthYyyyMmDd: string, at: Date): number | null {
-  const b = new Date(birthYyyyMmDd);
-  if (Number.isNaN(b.getTime())) return null;
+  const b = parseIsoDate(birthYyyyMmDd);
+  if (!b) return null;
   const age = (at.getTime() - b.getTime()) / (365.25 * 24 * 3600 * 1000);
   return age > 0 ? age : null;
 }

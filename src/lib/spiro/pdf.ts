@@ -1,6 +1,6 @@
 import jsPDF from "jspdf";
 import type { ReportConfig } from "@/stores/useReportStore";
-import type { SpiroStudy } from "./types";
+import { isoToDmy, type SpiroStudy } from "./types";
 import {
   computeSpiroMetrics,
   reportedValues,
@@ -90,7 +90,7 @@ function drawPatientTable(pdf: jsPDF, y: number, s: SpiroStudy): number {
   const imcStr = imc !== null && Number.isFinite(imc) ? `${imc.toFixed(1)} kg/m²` : "—";
   const rows: Array<[string, string, string, string]> = [
     ["Nombre", s.patient.nombre || "—", "RUT", s.patient.rut || "—"],
-    ["Sexo", s.patient.sexo, "F. nacimiento", s.patient.fechaNacimiento || "—"],
+    ["Sexo", s.patient.sexo, "F. nacimiento", isoToDmy(s.patient.fechaNacimiento) || "—"],
     ["Edad", `${s.patient.edad} años`, "Etnia", s.patient.etnia],
     ["Estatura", `${s.patient.estaturaCm} cm`, "Peso", `${s.patient.pesoKg.toFixed(1)} kg`],
     ["IMC", imcStr, "", ""],

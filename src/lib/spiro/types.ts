@@ -79,10 +79,33 @@ export function emptyAnalysis(): SpiroAnalysis {
   return { interpretacion: "", conclusion: "" };
 }
 
+/** "aaaa-mm-dd" → Date local (new Date("aaaa-mm-dd") es UTC y en Chile
+ *  cae el día anterior). null si no es una fecha real. */
+export function parseIsoDate(yyyyMmDd: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(yyyyMmDd);
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return d.getMonth() === +m[2] - 1 && d.getDate() === +m[3] ? d : null;
+}
+
+/** "dd/mm/aaaa" → "aaaa-mm-dd", o null si no es una fecha real pasada. */
+export function dmyToIso(dmy: string): string | null {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dmy);
+  if (!m) return null;
+  const iso = `${m[3]}-${m[2]}-${m[1]}`;
+  const d = parseIsoDate(iso);
+  return d && d <= new Date() ? iso : null;
+}
+
+/** "aaaa-mm-dd" → "dd/mm/aaaa" (texto tal cual si no calza). */
+export function isoToDmy(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
 export function computeAgeFromBirth(yyyyMmDd: string): number | null {
-  if (!yyyyMmDd) return null;
-  const d = new Date(yyyyMmDd);
-  if (Number.isNaN(d.getTime())) return null;
+  const d = parseIsoDate(yyyyMmDd);
+  if (!d) return null;
   const now = new Date();
   let age = now.getFullYear() - d.getFullYear();
   const m = now.getMonth() - d.getMonth();
