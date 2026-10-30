@@ -210,7 +210,8 @@ function drawQuality(
   setText(pdf, C.muted, 9, false);
   pdf.text(
     `· n=${q.nManeuvers}` +
-      (q.repeatabilityMl !== null ? `  · repetibilidad ${q.repeatabilityMl.toFixed(0)} ml` : "") +
+      (q.fev1RepMl !== null ? `  · ΔFEV1 ${q.fev1RepMl.toFixed(0)} mL` : "") +
+      (q.fvcRepMl !== null ? `  · ΔFVC ${q.fvcRepMl.toFixed(0)} mL` : "") +
       (q.nRejectedBev > 0 ? `  · ${q.nRejectedBev} rechazada(s) por BEV` : ""),
     MARGIN + 45,
     y,

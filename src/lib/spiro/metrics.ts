@@ -9,14 +9,15 @@ import { isBevAcceptable } from "./quality";
  * Es el tiempo (en coords del propio registro) en que la tangente al volumen
  * en el punto de flujo máximo cruzaría V = 0. Define el "time-zero" clínico
  * desde el cual se mide FEV(t). El BEV (back-extrapolated volume) es el
- * volumen ya exhalado en t0_be — debe ser < max(150 mL, 5 % FVC).
+ * volumen ya exhalado en t0_be — debe ser ≤ máx(100 mL, 5 % FVC). El BEV
+ * queda INCLUIDO en FEV1 y FVC (no se resta).
  */
 export interface SpiroBackExtrap {
   /** Tiempo cero back-extrapolado en las coords del registro (s). Puede ser < 0. */
   t0: number;
   /** Volumen de la curva en t0 (offset a sustraer de FVC y FEV) (L). */
   v0: number;
-  /** Back-extrapolated volume = v0 (L). Criterio ATS/ERS: < max(0.150, 0.05·FVC). */
+  /** Back-extrapolated volume = v0 (L). Criterio ATS/ERS 2019: ≤ máx(0.100, 0.05·FVC). */
   bev: number;
 }
 
@@ -174,28 +175,24 @@ export function computeSpiroMetrics(
 ): SpiroMetrics | null {
   if (rawCurve.length === 0) return null;
 
+  // Volumen 0 = inicio de la espiración (el firmware resetea el volumen
+  // antes del trigger). FVC y FEV(t) se miden desde ahí: el BEV queda
+  // incluido (ATS/ERS); t0_be solo define el origen de tiempo.
   const be = computeBackExtrap(rawCurve);
-  const curve = closeInspLimb(rawCurve, be?.v0 ?? 0);
+  const curve = closeInspLimb(rawCurve, 0);
   const t0 = be?.t0 ?? 0;
-  const v0 = be?.v0 ?? 0;
 
-  // PEF: máximo flujo (la translación temporal/volumétrica no lo altera).
+  // PEF: máximo flujo.
   const pefRaw = curve.reduce((m, p) => (p.f > m ? p.f : m), -Infinity);
   const pef = Number.isFinite(pefRaw) ? pefRaw : null;
 
-  // FVC: máximo volumen exhalado relativo a la referencia back-extrapolada.
+  // FVC: máximo volumen exhalado.
   const vMaxRaw = curve.reduce((m, p) => (p.v > m ? p.v : m), -Infinity);
-  const fvcRaw = Number.isFinite(vMaxRaw) ? vMaxRaw - v0 : NaN;
-  const fvc = Number.isFinite(fvcRaw) && fvcRaw > 0 ? fvcRaw : null;
+  const fvc = Number.isFinite(vMaxRaw) && vMaxRaw > 0 ? vMaxRaw : null;
   const fvcOk = fvc !== null;
 
-  // FEV(t): volumen exhalado en `t` segundos *desde t0_be*.
-  //   FEV(t) = V_curve(t0_be + t) − V_curve(t0_be) = V_curve(t0_be + t) − v0
-  const vAtAbs = (absT: number) => interpVolumeAtTime(curve, absT);
-  const fevAt = (seconds: number): number | null => {
-    const v = vAtAbs(t0 + seconds);
-    return v !== null ? v - v0 : null;
-  };
+  // FEV(t): volumen exhalado a los `t` segundos desde t0_be.
+  const fevAt = (seconds: number): number | null => interpVolumeAtTime(curve, t0 + seconds);
 
   // FEV1: canónico ATS/ERS — 1.0 s después del back-extrap zero.
   const fev1 = fevAt(1.0);
@@ -204,18 +201,17 @@ export function computeSpiroMetrics(
   const fevA = fevAt(markerA);
   const fevB = fevAt(markerB);
 
-  // FEF25/50/75: flujo cuando el volumen *corregido* cruza X % del FVC.
-  // En coords originales eso es X·FVC + v0.
+  // FEF25/50/75: flujo cuando el volumen exhalado cruza X % del FVC.
   const flowAtCorrFvcFrac = (frac: number) =>
-    fvcOk ? flowAtVolume(curve, frac * fvc + v0) : null;
+    fvcOk ? flowAtVolume(curve, frac * fvc) : null;
 
   // FIF25/50/75: igual referencia (ATS/ERS recomienda mismo X% del FVC).
   const inspFlowAtCorrFvcFrac = (frac: number) =>
-    fvcOk ? inspFlowAtVolume(curve, frac * fvc + v0) : null;
+    fvcOk ? inspFlowAtVolume(curve, frac * fvc) : null;
 
   // FEF25-75: volumen entre 25 y 75 % del FVC / tiempo en recorrerlo.
-  const t25 = fvcOk ? timeAtVolume(curve, 0.25 * fvc + v0) : null;
-  const t75 = fvcOk ? timeAtVolume(curve, 0.75 * fvc + v0) : null;
+  const t25 = fvcOk ? timeAtVolume(curve, 0.25 * fvc) : null;
+  const t75 = fvcOk ? timeAtVolume(curve, 0.75 * fvc) : null;
   const fef2575 =
     fvcOk && t25 !== null && t75 !== null && t75 > t25 ? (0.5 * fvc) / (t75 - t25) : null;
 

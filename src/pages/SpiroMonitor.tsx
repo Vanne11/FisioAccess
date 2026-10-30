@@ -36,6 +36,7 @@ import {
   type SpiroGroupAverage,
 } from "@/lib/spiro/metrics";
 import {
+  bevLimit,
   computeQuality,
   computeSuggestions,
   gradeColorClasses,
@@ -105,18 +106,20 @@ function QualityBlock({
           >
             {quality.grade}
           </span>
-          <span className="text-secondary">
+          <span
+            className="text-secondary"
+            title="Repetibilidad ATS/ERS 2019: diferencia entre los dos mayores FEV1 y FVC de maniobras aceptables"
+          >
             n={quality.nManeuvers}
-            {quality.repeatabilityMl !== null
-              ? ` · rep ${quality.repeatabilityMl.toFixed(0)} ml`
-              : ""}
+            {quality.fev1RepMl !== null ? ` · ΔFEV1 ${quality.fev1RepMl.toFixed(0)}` : ""}
+            {quality.fvcRepMl !== null ? ` · ΔFVC ${quality.fvcRepMl.toFixed(0)} mL` : ""}
           </span>
         </span>
       </div>
       {quality.nRejectedBev > 0 && (
         <div
           className="mt-1 text-[10px] text-red-300"
-          title="Maniobras con BEV > máx(150 mL, 5% FVC) — no cumplen aceptabilidad ATS/ERS"
+          title="Maniobras con BEV > máx(100 mL, 5% FVC) — no cumplen aceptabilidad ATS/ERS 2019"
         >
           {quality.nRejectedBev} maniobra{quality.nRejectedBev === 1 ? "" : "s"} rechazada
           {quality.nRejectedBev === 1 ? "" : "s"} por BEV
@@ -1215,15 +1218,13 @@ export function SpiroMonitor() {
                   </span>
                   {measurements.backExtrap && (() => {
                     const bevMl = measurements.backExtrap.bev * 1000;
-                    const limitMl = measurements.fvc !== null
-                      ? Math.max(150, 0.05 * measurements.fvc * 1000)
-                      : 150;
+                    const limitMl = bevLimit(measurements.fvc) * 1000;
                     const ok = bevMl <= limitMl;
                     return (
                       <>
                         <span
                           className="text-secondary text-[10px]"
-                          title={`Back-extrapolated volume. ATS/ERS exige < ${limitMl.toFixed(0)} mL (máx 150 mL ó 5% FVC)`}
+                          title={`Back-extrapolated volume. ATS/ERS exige < ${limitMl.toFixed(0)} mL (máx 100 mL ó 5% FVC)`}
                         >
                           BEV
                         </span>
@@ -1242,14 +1243,15 @@ export function SpiroMonitor() {
                 <p className="text-xs text-muted">Sin datos</p>
               )}
 
-              {(groupAnalysis.pre.quality.nManeuvers > 0 ||
-                groupAnalysis.post.quality.nManeuvers > 0) && (
+              {recordings.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-surface-700">
                   <p className="text-sm font-medium text-secondary mb-2">
                     Calidad ATS/ERS
                   </p>
-                  <QualityBlock label="PRE" data={groupAnalysis.pre} accent="text-sky-300" />
-                  {groupAnalysis.post.quality.nManeuvers > 0 && (
+                  {groupAnalysis.pre.quality.nManeuvers + groupAnalysis.pre.quality.nRejectedBev > 0 && (
+                    <QualityBlock label="PRE" data={groupAnalysis.pre} accent="text-sky-300" />
+                  )}
+                  {groupAnalysis.post.quality.nManeuvers + groupAnalysis.post.quality.nRejectedBev > 0 && (
                     <QualityBlock label="POST" data={groupAnalysis.post} accent="text-amber-300" />
                   )}
                 </div>

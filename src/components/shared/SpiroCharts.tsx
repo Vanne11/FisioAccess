@@ -10,22 +10,18 @@ export interface SpiroPoint {
 }
 
 /**
- * Desplaza una curva al sistema de referencia clínico ATS/ERS:
- *   - t' = t − t0_be   (t' = 0 en el "time-zero" back-extrapolado)
- *   - v' = v − v0       (v' = 0 sobre la línea tangente proyectada)
- *
- * Si la curva no permite calcular back-extrap (pocos samples, sin flujo
- * positivo), se devuelve sin modificar. El flujo no cambia.
+ * Desplaza una curva al origen de tiempo clínico ATS/ERS: t' = t − t0_be
+ * (t' = 0 en el "time-zero" back-extrapolado). El volumen no se desplaza:
+ * V = 0 es el inicio de la espiración y el BEV queda incluido, igual que en
+ * `computeSpiroMetrics`. La rama inspiratoria se reescala para cerrar el lazo.
  */
 function shiftCurve(pts: SpiroPoint[]): SpiroPoint[] {
   if (pts.length === 0) return pts;
+  pts = closeInspLimb(pts, 0);
   const be = computeBackExtrap(pts);
-  if (!be) return pts;
-  pts = closeInspLimb(pts, be.v0);
+  if (!be || be.t0 === 0) return pts;
   const dt = be.t0;
-  const dv = be.v0;
-  if (dt === 0 && dv === 0) return pts;
-  return pts.map((p) => ({ t: p.t - dt, p: p.p, f: p.f, v: p.v - dv }));
+  return pts.map((p) => ({ ...p, t: p.t - dt }));
 }
 
 export interface SpiroRecording {
@@ -456,7 +452,7 @@ export function SpiroCharts({
   const vtCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Curvas en sistema de referencia clínico ATS/ERS: cada una se desplaza
-  // por su propio t0_be / v0 para que t'=0, v'=0 corresponda al
+  // por su propio t0_be para que t'=0 corresponda al
   // "time-zero" back-extrapolado. Toda la lógica de render, autoscale,
   // marcadores y anclas opera sobre estas curvas desplazadas; markerLines
   // y refLines son valores en este sistema (= segundos / litros desde la
