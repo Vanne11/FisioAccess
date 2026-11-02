@@ -160,8 +160,8 @@ function GroupRow({
   return (
     <tr>
       <td className="text-secondary pr-1">{label}</td>
-      <td className="text-right pr-1 text-sky-300">{fmt(pre)}</td>
-      <td className="text-right text-amber-300">{fmt(post)}</td>
+      <td className="text-right pr-1 text-primary font-semibold">{fmt(pre)}</td>
+      <td className="text-right text-amber-300 font-semibold [[data-theme=light]_&]:text-amber-800 [[data-theme=alucard]_&]:text-amber-800">{fmt(post)}</td>
     </tr>
   );
 }
