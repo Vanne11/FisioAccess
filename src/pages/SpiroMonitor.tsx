@@ -311,8 +311,8 @@ export function SpiroMonitor() {
   // Datos del estudio en memoria (paciente + análisis) para reutilizar
   // entre Guardar y Vista previa, y para conservar lo escrito al recargar.
   const [studyPatient, setStudyPatient] = useState<SpiroPatient | undefined>();
-  // Diálogo de paciente: "start" inicia el examen al confirmar; "edit" solo edita.
-  const [patientDialog, setPatientDialog] = useState<null | "start" | "edit">(null);
+  // Diálogo de paciente: "calibrate" pregunta si calibrar al confirmar; "edit" solo edita.
+  const [patientDialog, setPatientDialog] = useState<null | "calibrate" | "edit">(null);
   const [studyAnalysis, setStudyAnalysis] = useState<SpiroAnalysis | undefined>();
   const [saveOpen, setSaveOpen] = useState(false);
   const workDir = useWorkspaceStore((s) => s.workDir);
@@ -1612,7 +1612,9 @@ export function SpiroMonitor() {
           <Card className="shrink-0">
             <CardContent className="flex flex-wrap items-center gap-2 py-2">
               <Button
-                onClick={() => (studyPatient ? handleStart() : setPatientDialog("start"))}
+                // Sin paciente (p. ej. tras "Borrar todo") se pide primero, sin arrancar
+                // solo: el examen empieza recién cuando se aprieta Iniciar.
+                onClick={() => (studyPatient ? handleStart() : setPatientDialog("edit"))}
                 disabled={!canStart}
                 variant="primary"
               >
@@ -1626,7 +1628,9 @@ export function SpiroMonitor() {
               >
                 <FlaskConical className="h-4 w-4 mr-1" />Simular
               </Button>
-              <Button onClick={handleCalibrate} disabled={!canCalibrate} variant="secondary">
+              <Button
+                onClick={() => (studyPatient ? handleCalibrate() : setPatientDialog("calibrate"))}
+                disabled={!canCalibrate} variant="secondary">
                 <RefreshCcw className="h-4 w-4 mr-1" />Calibrar
               </Button>
               <Button
@@ -1667,7 +1671,13 @@ export function SpiroMonitor() {
         onClose={() => setPatientDialog(null)}
         onSave={(p) => {
           setStudyPatient(p);
-          if (patientDialog === "start") void handleStart();
+          if (patientDialog === "calibrate") {
+            void ask("Datos del paciente registrados. ¿Desea calibrar ahora?", {
+              title: "Calibración",
+              okLabel: "Calibrar",
+              cancelLabel: "Ahora no",
+            }).then((ok) => { if (ok) void handleCalibrate(); });
+          }
         }}
         initialPatient={studyPatient}
         recordingsCount={recordings.length}
