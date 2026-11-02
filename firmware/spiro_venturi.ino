@@ -127,7 +127,30 @@ float getPressureKPA(int channel) {
     return sum / validReadings;
 }
 
+// Re-cero rápido antes de cada prueba: el sensor deriva con el aire
+// tibio/húmedo de las maniobras y, por la raíz de Venturi, una deriva de
+// apenas 0.002 kPa ya es ≥0.3 L/s de flujo fantasma que se integra sin fin.
+// Si hay flujo (|P| > ZERO_MAX_KPA) se conserva el cero anterior.
+const int NUM_ZERO_SAMPLES = 30;          // ~0.3 s a 128 SPS
+const float ZERO_MAX_KPA = 0.05;          // ≈1.5 L/s: por encima, alguien sopla
+void quickZero() {
+    float sum = 0;
+    int n = 0;
+    for (int i = 0; i < NUM_ZERO_SAMPLES; i++) {
+        int16_t adc0 = ads.readADC_SingleEnded(0);
+        if (adc0 <= 100 || adc0 >= 32667) continue;
+        sum += ads.computeVolts(adc0);
+        n++;
+    }
+    if (n == 0) return;
+    float newOffset = sum / n - 2.5;
+    if (abs(newOffset - calibrationOffset) / 0.285 < ZERO_MAX_KPA) {
+        calibrationOffset = newOffset;
+    }
+}
+
 void resetVolume() {
+    quickZero();
     volume = 0;
     lastMeasurementTime = millis();
     resetMeasurementTime = lastMeasurementTime;
