@@ -670,10 +670,19 @@ export function SpiroMonitor() {
     setStudyAnalysis(undefined);
   }, [fsm, recordings.length, studyPatient]);
 
-  const handleDeleteRec = useCallback((id: number) => {
+  const handleDeleteRec = useCallback(async (id: number) => {
+    const rec = recordings.find((r) => r.id === id);
+    const ok = await ask(
+      `Se borrará la prueba ${rec?.number ?? ""}. Esta acción no se puede deshacer.`,
+      { title: "Borrar prueba", kind: "warning", okLabel: "Borrar", cancelLabel: "Cancelar" },
+    );
+    if (!ok) return;
     setRecordings((prev) => prev.filter((r) => r.id !== id));
     setSelectedRecId((cur) => (cur === id ? null : cur));
-  }, []);
+    // Sin selección el gráfico cae a displayData, que tras grabar es la misma
+    // curva: limpiarla para que la prueba borrada no siga en pantalla.
+    if (rec) setDisplayData((cur) => (cur === rec.data ? [] : cur));
+  }, [recordings]);
 
   // ─── Estudio (JSON con paciente + maniobras) ─────────────────────
   // Charts ocultos para capturar PRE y POST por separado en el PDF.
@@ -1193,7 +1202,7 @@ export function SpiroMonitor() {
                             {status}
                           </button>
                           <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteRec(r.id); }}
+                            onClick={(e) => { e.stopPropagation(); void handleDeleteRec(r.id); }}
                             className="text-muted hover:text-red-400 transition-colors"
                             title="Eliminar"
                           >
