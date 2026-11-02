@@ -14,7 +14,6 @@ import {
   SpiroCharts,
   type SpiroPoint,
   type SpiroRecording,
-  type SpiroMarkerLines,
 } from "@/components/shared/SpiroCharts";
 import { ReportPreview, type ReportData } from "@/components/shared/ReportPreview";
 import { SpiroSaveDialog } from "@/components/shared/SpiroSaveDialog";
@@ -63,7 +62,7 @@ type FsmState =
   | "calibrated"
   | "recording";
 
-const DEFAULT_RECORDING_SECS = 6;
+const DEFAULT_RECORDING_SECS = 10;
 const DEFAULT_MAX_RECORDINGS = 9;
 const MAX_RECORDINGS_LIMIT = 20;
 const MAX_RECORDING_SECS_LIMIT = 30;
@@ -78,12 +77,9 @@ const COLORS = [
 // refLines se mantiene en el formato de estudio JSON con un valor fijo
 // (la gráfica calcula PEF/FVC automáticamente desde la curva).
 const STUDY_REF_LINES = { pef: 1.5, fvc: 4.0 };
-const DEFAULT_MARKER_LINES: SpiroMarkerLines = { a: 1.0, b: 2.0 };
 
 const LS_MAX_RECORDINGS = "spiro.maxRecordings";
 const LS_RECORDING_SECS = "spiro.recordingSecs";
-const LS_MARKER_A = "spiro.markerA";
-const LS_MARKER_B = "spiro.markerB";
 
 function QualityBlock({
   label,
@@ -260,7 +256,7 @@ export function SpiroMonitor() {
 
   // Modo de display: qué curva pinta la gráfica.
   //  idle      → nada visible (entre tests / esperando trigger)
-  //  recording → grabación en curso (t relativo 0–6 s)
+  //  recording → grabación en curso (t relativo 0–recordingSecs)
   //  frozen    → última grabación congelada en pantalla
   //  imported  → CSV cargado desde disco
   type DisplayMode = "idle" | "recording" | "frozen" | "imported";
@@ -279,10 +275,6 @@ export function SpiroMonitor() {
   const [recordingSecs, setRecordingSecs] = useState<number>(() =>
     loadNumber(LS_RECORDING_SECS, DEFAULT_RECORDING_SECS, 1, MAX_RECORDING_SECS_LIMIT),
   );
-  const [markerLines, setMarkerLines] = useState<SpiroMarkerLines>(() => ({
-    a: loadNumber(LS_MARKER_A, DEFAULT_MARKER_LINES.a, 0, 17),
-    b: loadNumber(LS_MARKER_B, DEFAULT_MARKER_LINES.b, 0, 17),
-  }));
   const recordingSecsRef = useRef(recordingSecs);
   useEffect(() => { recordingSecsRef.current = recordingSecs; }, [recordingSecs]);
   const maxRecordingsRef = useRef(maxRecordings);
@@ -294,10 +286,6 @@ export function SpiroMonitor() {
   useEffect(() => {
     window.localStorage.setItem(LS_RECORDING_SECS, String(recordingSecs));
   }, [recordingSecs]);
-  useEffect(() => {
-    window.localStorage.setItem(LS_MARKER_A, String(markerLines.a));
-    window.localStorage.setItem(LS_MARKER_B, String(markerLines.b));
-  }, [markerLines]);
 
   // Prueba seleccionada (id). Cuando se selecciona, esa curva es la
   // "activa" (sólida) sobre la que operan los marcadores vLine A/B.
@@ -420,7 +408,7 @@ export function SpiroMonitor() {
     lastTMsRef.current = p.t_ms;
 
     // Trigger: tras Iniciar, esperamos el primer volumen positivo
-    // (= primera espiración) para arrancar la grabación de 6 s.
+    // (= primera espiración) para arrancar la grabación (recordingSecs, 10 s por defecto).
     if (pendingRecordRef.current && p.v > 0) {
       pendingRecordRef.current = false;
       recStartTMsRef.current = p.t_ms;
@@ -737,7 +725,6 @@ export function SpiroMonitor() {
         recordings,
         bronchodilatorByRec: bronchoByRec,
         refLines: STUDY_REF_LINES,
-        markerLines,
       });
       const json = studyToPythonJSON(study);
       const filename = studyFilename(patient, study.timestamp);
@@ -773,7 +760,7 @@ export function SpiroMonitor() {
       setStudyAnalysis(analysis);
       setLastCalMsg(`Estudio guardado: ${path}  +  ${pdfPath}`);
     },
-    [recordings, bronchoByRec, markerLines, workDir, reportConfig, captureFilteredCharts],
+    [recordings, bronchoByRec, workDir, reportConfig, captureFilteredCharts],
   );
 
   const handleOpenSave = useCallback(() => {
@@ -891,10 +878,6 @@ export function SpiroMonitor() {
     });
     setRecordings(newRecordings);
     setBronchoByRec(newBroncho);
-    const firstLp = Object.values(study.linePositions)[0];
-    if (firstLp) {
-      setMarkerLines({ a: firstLp.markerA, b: firstLp.markerB });
-    }
     setStudyPatient(study.patient);
     setStudyAnalysis(study.analysis);
     setSelectedRecId(newRecordings[0]?.id ?? null);
@@ -1009,12 +992,11 @@ export function SpiroMonitor() {
   // Mediciones calculadas sobre la curva activa.
   // - PEF (L/s): flujo pico = max(f)
   // - FVC (L): volumen máximo alcanzado = max(v)
-  // - FEV(A)/FEV(B): volumen interpolado en cada cursor
+  // - FEV1/FEV6: volumen a 1 y 6 s del time-zero back-extrapolado
   // - FEF25/50/75: flujo cuando se ha exhalado 25/50/75 % del FVC
-  // - FEV(A)/FVC: ratio (equivale a FEV1/FVC si el cursor A está en 1.0 s)
   const measurements = useMemo<SpiroMetrics | null>(
-    () => computeSpiroMetrics(currentCurve, markerLines.a, markerLines.b),
-    [currentCurve, markerLines],
+    () => computeSpiroMetrics(currentCurve),
+    [currentCurve],
   );
 
   // Helpers PRE/POST
@@ -1050,7 +1032,7 @@ export function SpiroMonitor() {
     const postMetrics: SpiroMetrics[] = [];
     const postNums: number[] = [];
     for (const r of recordings) {
-      const m = computeSpiroMetrics(r.data, markerLines.a, markerLines.b);
+      const m = computeSpiroMetrics(r.data);
       if (!m) continue;
       if (getBroncho(r.id) === "POST") {
         postMetrics.push(m);
@@ -1074,7 +1056,7 @@ export function SpiroMonitor() {
         suggestions: computeSuggestions(postMetrics, postNums),
       },
     };
-  }, [recordings, markerLines, getBroncho]);
+  }, [recordings, getBroncho]);
   const groupAverages = useMemo(
     () => ({ pre: groupAnalysis.pre.avg, post: groupAnalysis.post.avg }),
     [groupAnalysis],
@@ -1297,26 +1279,11 @@ export function SpiroMonitor() {
                       ? `${measurements.fev1OverFvc.toFixed(1)} %`
                       : "—"}
                   </span>
-                  <span className="col-span-2 border-t border-surface-700 my-1" />
-                  <span className="text-secondary text-[10px]" title="Cursores libres en el gráfico V-t">
-                    Cursores
-                  </span>
-                  <span />
-                  <span className="text-secondary" style={{ color: "#ef4444" }}>
-                    FEV(A) {markerLines.a.toFixed(2)}s
+                  <span className="text-secondary" title="Si la espiración duró menos de 6 s, FEV6 = FVC">
+                    FEV6
                   </span>
                   <span className="text-right">
-                    {measurements.fevA !== null ? `${measurements.fevA.toFixed(2)} L` : "—"}
-                  </span>
-                  <span className="text-secondary" style={{ color: "#10b981" }}>
-                    FEV(B) {markerLines.b.toFixed(2)}s
-                  </span>
-                  <span className="text-right">
-                    {measurements.fevB !== null ? `${measurements.fevB.toFixed(2)} L` : "—"}
-                  </span>
-                  <span className="text-secondary" style={{ color: "#22d3ee" }}>ΔV (A→B)</span>
-                  <span className="text-right">
-                    {measurements.deltaV !== null ? `${measurements.deltaV.toFixed(2)} L` : "—"}
+                    {measurements.fev6 !== null ? `${measurements.fev6.toFixed(2)} L` : "—"}
                   </span>
                   {measurements.backExtrap && (() => {
                     const bevMl = measurements.backExtrap.bev * 1000;
@@ -1596,8 +1563,6 @@ export function SpiroMonitor() {
                   currentColor={selectedRec?.color}
                   currentRecording={selectedRec}
                   recordings={otherRecordings}
-                  markerLines={markerLines}
-                  onMarkerLinesChange={setMarkerLines}
                 />
               </div>
               {lastCalMsg && (
@@ -1712,8 +1677,6 @@ export function SpiroMonitor() {
             currentColor={hiddenRecordings[0].color}
             currentRecording={hiddenRecordings[0]}
             recordings={hiddenRecordings.slice(1)}
-            markerLines={markerLines}
-            onMarkerLinesChange={() => {}}
             height={260}
             minHeight={260}
           />

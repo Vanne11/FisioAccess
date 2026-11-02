@@ -374,14 +374,10 @@ export function generateSpiroPDF(
   // Agrupar maniobras por estado
   const preRecs = study.recordings.filter((r) => r.bronchodilatorStatus === "PRE");
   const postRecs = study.recordings.filter((r) => r.bronchodilatorStatus === "POST");
-  const lp = study.linePositions;
-  const firstLp = Object.values(lp)[0] ?? { markerA: 1, markerB: 2, refPef: 1.5, refFvc: 4 };
-  const a = firstLp.markerA;
-  const b = firstLp.markerB;
 
   const withMetrics = (recs: typeof preRecs) =>
     recs.flatMap((r) => {
-      const m = computeSpiroMetrics(r.data, a, b);
+      const m = computeSpiroMetrics(r.data);
       return m ? [{ number: r.recordingNumber, m }] : [];
     });
   const preList = withMetrics(preRecs);

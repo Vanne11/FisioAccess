@@ -39,20 +39,9 @@ export interface SpiroRefLines {
   fvc: number;
 }
 
-/** Cursores verticales en el chart Volumen/Tiempo para medir
- *  intervalos de la curva (FEV1, FEV0.5, etc). */
-export interface SpiroMarkerLines {
-  /** Tiempo (s) del cursor A. */
-  a: number;
-  /** Tiempo (s) del cursor B. */
-  b: number;
-}
-
 interface SpiroChartsProps {
   current: SpiroPoint[];
   recordings: SpiroRecording[];
-  markerLines: SpiroMarkerLines;
-  onMarkerLinesChange: (next: SpiroMarkerLines) => void;
   /** Color de la curva actual; si se omite se usan los defaults
    *  (azul para V-t, verde para F-V). Útil para mostrar la curva
    *  seleccionada con el mismo color de su entrada en la lista. */
@@ -92,12 +81,9 @@ const COLOR_FIF = "#ef4444";        // rojo — drop lines FIF (inspiración)
 const COLOR_ANCHOR = "#fb923c";     // naranja — anclas PEF y FVC
 const COLOR_EXP_LABEL = "#3b82f6";
 const COLOR_INSP_LABEL = "#ef4444";
-const COLOR_MARKER_A = "#ef4444"; // rojo
 const COLOR_FEV1 = "#facc15";     // amarillo — FEV1 automático
-const COLOR_MARKER_B = "#10b981"; // verde
-const COLOR_MARKER_DIFF = "#22d3ee"; // cyan
+const COLOR_FEV6 = "#a78bfa";     // violeta — FEV6 automático
 
-const REF_GRAB_PX = 6;
 const FV_GRAB_PX = 10;
 
 /** Interpola linealmente el volumen `v` en la curva al tiempo `x`.
@@ -440,8 +426,6 @@ function ChartPanel({ width, height, draw, onMouseDown, onMouseMove, onMouseUp, 
 export function SpiroCharts({
   current,
   recordings,
-  markerLines,
-  onMarkerLinesChange,
   currentColor,
   currentRecording,
   height,
@@ -475,14 +459,6 @@ export function SpiroCharts({
     return list;
   }, [shiftedCurrent, shiftedRecordings]);
 
-  // Fin real de las curvas: límite de arrastre de los cursores. No se usa
-  // vtView (que se expande con los propios cursores) para no realimentar.
-  const dataTMax = useMemo(() => {
-    let m = -Infinity;
-    for (const pts of allCurves) for (const p of pts) if (p.t > m) m = p.t;
-    return Number.isFinite(m) ? m : VT_T_FALLBACK_MAX;
-  }, [allCurves]);
-
   const vtView = useMemo<VtView>(() => {
     let tMin = Infinity;
     let tMax = -Infinity;
@@ -503,16 +479,14 @@ export function SpiroCharts({
       vMin = VT_V_FALLBACK_MIN;
       vMax = VT_V_FALLBACK_MAX;
     }
-    // Marcadores A/B deben entrar siempre
-    tMin = Math.min(tMin, markerLines.a, markerLines.b, 0);
-    tMax = Math.max(tMax, markerLines.a, markerLines.b);
+    tMin = Math.min(tMin, 0);
     // Volumen siempre incluye 0 como referencia visual
     vMin = Math.min(vMin, 0);
     vMax = Math.max(vMax, 0);
     const padT = Math.max(MIN_PAD_T, (tMax - tMin) * PAD_FRAC);
     const padV = Math.max(MIN_PAD_V, (vMax - vMin) * PAD_FRAC);
     return { tMin: tMin - padT, tMax: tMax + padT, vMin: vMin - padV, vMax: vMax + padV };
-  }, [allCurves, markerLines]);
+  }, [allCurves]);
 
   // Anclas PEF y FVC arrastrables horizontalmente, en volúmenes absolutos
   // independientes (como en la versión original). PEF se autocalcula al
@@ -666,7 +640,7 @@ export function SpiroCharts({
       drawSeries(ctx, pts, MARGIN_LEFT, MARGIN_TOP, plotW, plotH,
         tMin, tMax, vMin, vMax, currentColor ?? COLOR_CURRENT_VT, false);
 
-      // ── Marcadores verticales A y B (cursor medidor) ───────────
+      // ── FEV1 y FEV6 automáticos ────────────────────────────────
       const xToPx = (x: number) =>
         MARGIN_LEFT + ((x - tMin) / (tMax - tMin)) * plotW;
       const yToPx = (y: number) =>
@@ -677,13 +651,22 @@ export function SpiroCharts({
       ctx.rect(MARGIN_LEFT, MARGIN_TOP, plotW, plotH);
       ctx.clip();
 
-      // FEV1 automático: t' = 0 es el time-zero back-extrapolado, así que
-      // FEV1 = V(1 s). Línea fija, no arrastrable.
-      const fev1 = yAtX(shiftedCurrent, 1);
-      if (fev1 !== null) {
-        const px = xToPx(1);
-        const py = yToPx(fev1);
-        ctx.strokeStyle = COLOR_FEV1;
+      // t' = 0 es el time-zero back-extrapolado, así que FEVt = V(t s).
+      // FEV6 solo se marca si la espiración llegó a 6 s (si no, FEV6 = FVC
+      // y a los 6 s la curva ya está inspirando).
+      let tPeakV = -Infinity;
+      let vPeak = -Infinity;
+      for (const p of shiftedCurrent) if (p.v > vPeak) { vPeak = p.v; tPeakV = p.t; }
+      const fevMarks = [
+        { t: 1, label: "FEV1", color: COLOR_FEV1 },
+        ...(tPeakV >= 6 ? [{ t: 6, label: "FEV6", color: COLOR_FEV6 }] : []),
+      ];
+      for (const mk of fevMarks) {
+        const fev = yAtX(shiftedCurrent, mk.t);
+        if (fev === null) continue;
+        const px = xToPx(mk.t);
+        const py = yToPx(fev);
+        ctx.strokeStyle = mk.color;
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
@@ -692,66 +675,14 @@ export function SpiroCharts({
         ctx.lineTo(MARGIN_LEFT, py);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = COLOR_FEV1;
+        ctx.fillStyle = mk.color;
         ctx.beginPath();
         ctx.arc(px, py, 3.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.font = "bold 10px monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "bottom";
-        ctx.fillText(`FEV1 ${fev1.toFixed(2)} L`, px + 5, py - 3);
-      }
-
-      const markers: Array<{ x: number; color: string; label: "A" | "B" }> = [
-        { x: markerLines.a, color: COLOR_MARKER_A, label: "A" },
-        { x: markerLines.b, color: COLOR_MARKER_B, label: "B" },
-      ];
-      const yValues: Array<number | null> = [];
-      for (const m of markers) {
-        const px = xToPx(m.x);
-        ctx.strokeStyle = m.color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(px, MARGIN_TOP);
-        ctx.lineTo(px, MARGIN_TOP + plotH);
-        ctx.stroke();
-
-        const y = yAtX(shiftedCurrent, m.x);
-        yValues.push(y);
-
-        // Punto sobre la curva (si interpola dentro de rango)
-        if (y !== null) {
-          ctx.fillStyle = m.color;
-          ctx.beginPath();
-          ctx.arc(px, yToPx(y), 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Etiqueta X/Y al lado de la línea
-        ctx.fillStyle = m.color;
-        ctx.font = "bold 9px monospace";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "top";
-        const lblX = px + 4;
-        const lblY = MARGIN_TOP + 2;
-        ctx.fillText(`${m.label} t:${m.x.toFixed(2)}`, lblX, lblY);
-        if (y !== null) {
-          ctx.fillText(`v:${y.toFixed(2)}`, lblX, lblY + 11);
-        }
-      }
-
-      // Etiqueta de diferencia entre A y B
-      const [yA, yB] = yValues;
-      if (yA !== null && yB !== null) {
-        const dx = Math.abs(markerLines.b - markerLines.a);
-        const dy = Math.abs(yB - yA);
-        const xMid = (markerLines.a + markerLines.b) / 2;
-        const pxMid = xToPx(xMid);
-        ctx.fillStyle = COLOR_MARKER_DIFF;
-        ctx.font = "bold 10px monospace";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "bottom";
-        ctx.fillText(`Δt:${dx.toFixed(2)}s  Δv:${dy.toFixed(2)}L`, pxMid, MARGIN_TOP + plotH - 4);
+        ctx.fillText(`${mk.label} ${fev.toFixed(2)} L`, px + 5, py - 3);
       }
       ctx.restore();
 
@@ -764,7 +695,7 @@ export function SpiroCharts({
         drawLegend(ctx, MARGIN_LEFT + plotW - 95, MARGIN_TOP + 4, legendItems);
       }
     },
-    [shiftedCurrent, shiftedRecordings, markerLines, vtView, currentColor, legendItems],
+    [shiftedCurrent, shiftedRecordings, vtView, currentColor, legendItems],
   );
 
   // ── Canvas Flujo / Volumen ────────────────────────────────────────
@@ -1025,64 +956,6 @@ export function SpiroCharts({
     setFvCursor("default");
   }, []);
 
-  // ── Drag de marcadores A / B en el canvas Volumen/Tiempo ─────────
-  const vtDragRef = useRef<{ which: "a" | "b" } | null>(null);
-  const [vtCursor, setVtCursor] = useState("default");
-
-  const vtFromMouse = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = vtCanvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-    const plotW = vtWidth - MARGIN_LEFT - MARGIN_RIGHT;
-    const plotH = canvas.clientHeight - MARGIN_TOP - MARGIN_BOTTOM;
-    const t = vtView.tMin + ((px - MARGIN_LEFT) / plotW) * (vtView.tMax - vtView.tMin);
-    const v = vtView.vMax - ((py - MARGIN_TOP) / plotH) * (vtView.vMax - vtView.vMin);
-    const pxPerS = plotW / (vtView.tMax - vtView.tMin);
-    return { t, v, px, py, pxPerS };
-  }, [vtWidth, vtView]);
-
-  const handleVTDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = vtFromMouse(e);
-    if (!m) return;
-    const grabS = REF_GRAB_PX / m.pxPerS;
-    const dA = Math.abs(m.t - markerLines.a);
-    const dB = Math.abs(m.t - markerLines.b);
-    if (dA < grabS && dA <= dB) {
-      vtDragRef.current = { which: "a" };
-      setVtCursor("ew-resize");
-    } else if (dB < grabS) {
-      vtDragRef.current = { which: "b" };
-      setVtCursor("ew-resize");
-    }
-  }, [markerLines, vtFromMouse]);
-
-  const handleVTMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const m = vtFromMouse(e);
-    if (!m) return;
-    if (vtDragRef.current) {
-      const clamped = Math.max(0, Math.min(dataTMax, m.t));
-      if (vtDragRef.current.which === "a") {
-        onMarkerLinesChange({ a: clamped, b: markerLines.b });
-      } else {
-        onMarkerLinesChange({ a: markerLines.a, b: clamped });
-      }
-      return;
-    }
-    const grabS = REF_GRAB_PX / m.pxPerS;
-    if (Math.abs(m.t - markerLines.a) < grabS || Math.abs(m.t - markerLines.b) < grabS) {
-      setVtCursor("ew-resize");
-    } else {
-      setVtCursor("default");
-    }
-  }, [markerLines, vtFromMouse, onMarkerLinesChange, dataTMax]);
-
-  const handleVTUp = useCallback(() => {
-    vtDragRef.current = null;
-    setVtCursor("default");
-  }, []);
-
   return (
     <div
       ref={containerRef}
@@ -1112,10 +985,6 @@ export function SpiroCharts({
               width={vtWidth}
               height={chartHeight}
               draw={drawVT}
-              onMouseDown={handleVTDown}
-              onMouseMove={handleVTMove}
-              onMouseUp={handleVTUp}
-              cursor={vtCursor}
               canvasRef={vtCanvasRef}
             />
           </div>

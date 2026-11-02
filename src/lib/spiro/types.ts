@@ -1,4 +1,4 @@
-import type { SpiroPoint, SpiroRecording, SpiroRefLines, SpiroMarkerLines } from "@/components/shared/SpiroCharts";
+import type { SpiroPoint, SpiroRecording, SpiroRefLines } from "@/components/shared/SpiroCharts";
 
 export type BronchodilatorStatus = "PRE" | "POST";
 
@@ -142,7 +142,6 @@ export interface BuildStudyInput {
   recordings: SpiroRecording[];
   bronchodilatorByRec: Record<number, BronchodilatorStatus>;
   refLines: SpiroRefLines;
-  markerLines: SpiroMarkerLines;
   timestamp?: string;
 }
 
@@ -151,8 +150,10 @@ export function buildStudy(input: BuildStudyInput): SpiroStudy {
   const linePositions: Record<number, SpiroLinePositions> = {};
   for (const r of input.recordings) {
     linePositions[r.number] = {
-      markerA: input.markerLines.a,
-      markerB: input.markerLines.b,
+      // Cursores A/B retirados: se conservan valores fijos por compatibilidad
+      // con el formato del estudio (vLine1/vLine2).
+      markerA: 1.0,
+      markerB: 2.0,
       refPef: input.refLines.pef,
       refFvc: input.refLines.fvc,
     };

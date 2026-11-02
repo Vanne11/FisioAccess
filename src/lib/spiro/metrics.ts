@@ -28,17 +28,14 @@ export interface SpiroMetrics {
   fev1: number | null;
   /** Tiffeneau: FEV1 / FVC × 100 (%). */
   fev1OverFvc: number | null;
-  /** Mediciones libres con los cursores A/B (V a `markerA` y `markerB` segundos
-   *  después de t0_be). Útiles para FEV0.5, FEV3, FEV6, etc. */
-  fevA: number | null;
-  fevB: number | null;
-  deltaV: number | null;
+  /** FEV6: volumen exhalado en 6 s desde t0_be. Si la espiración terminó
+   *  antes de 6 s, FEV6 = FVC. */
+  fev6: number | null;
   fef25: number | null;
   fef50: number | null;
   fef75: number | null;
   /** Flujo medio entre el 25 y 75 % del FVC (MMEF), L/s. */
   fef2575: number | null;
-  fevAOverFvc: number | null;
   /** Flujos inspiratorios al 25/50/75 % del FVC (valor absoluto, L/s). */
   fif25: number | null;
   fif50: number | null;
@@ -168,11 +165,7 @@ export function computeBackExtrap(curve: SpiroPoint[]): SpiroBackExtrap | null {
   return { t0, v0, bev: v0 };
 }
 
-export function computeSpiroMetrics(
-  rawCurve: SpiroPoint[],
-  markerA: number,
-  markerB: number,
-): SpiroMetrics | null {
+export function computeSpiroMetrics(rawCurve: SpiroPoint[]): SpiroMetrics | null {
   if (rawCurve.length === 0) return null;
 
   // Volumen 0 = inicio de la espiración (el firmware resetea el volumen
@@ -197,9 +190,9 @@ export function computeSpiroMetrics(
   // FEV1: canónico ATS/ERS — 1.0 s después del back-extrap zero.
   const fev1 = fevAt(1.0);
 
-  // Cursores libres A/B (mediciones a voluntad: FEV0.5, FEV3, FEV6, etc.)
-  const fevA = fevAt(markerA);
-  const fevB = fevAt(markerB);
+  // FEV6: si a los 6 s ya se está inspirando (espiración < 6 s), FEV6 = FVC.
+  const tPeakV = curve.find((p) => p.v === vMaxRaw)?.t ?? Infinity;
+  const fev6 = t0 + 6 >= tPeakV ? fvc : fevAt(6.0);
 
   // FEF25/50/75: flujo cuando el volumen exhalado cruza X % del FVC.
   const flowAtCorrFvcFrac = (frac: number) =>
@@ -220,14 +213,11 @@ export function computeSpiroMetrics(
     fvc,
     fev1,
     fev1OverFvc: fev1 !== null && fvcOk ? (fev1 / fvc) * 100 : null,
-    fevA,
-    fevB,
-    deltaV: fevA !== null && fevB !== null ? Math.abs(fevB - fevA) : null,
+    fev6,
     fef25: flowAtCorrFvcFrac(0.25),
     fef50: flowAtCorrFvcFrac(0.5),
     fef75: flowAtCorrFvcFrac(0.75),
     fef2575,
-    fevAOverFvc: fevA !== null && fvcOk ? (fevA / fvc) * 100 : null,
     fif25: inspFlowAtCorrFvcFrac(0.25),
     fif50: inspFlowAtCorrFvcFrac(0.5),
     fif75: inspFlowAtCorrFvcFrac(0.75),
@@ -241,13 +231,11 @@ export interface SpiroGroupAverage {
   fvc: number | null;
   fev1: number | null;
   fev1OverFvc: number | null;
-  fevA: number | null;
-  fevB: number | null;
+  fev6: number | null;
   fef25: number | null;
   fef50: number | null;
   fef75: number | null;
   fef2575: number | null;
-  fevAOverFvc: number | null;
   fif25: number | null;
   fif50: number | null;
   fif75: number | null;
@@ -257,9 +245,6 @@ export interface SpiroGroupAverage {
   bestFvc: number | null;
   /** Ratio clínico de referencia: mejor FEV1 / mejor FVC × 100. */
   bestFev1OverBestFvc: number | null;
-  /** Mejor FEV(A) (cursor libre) — útil cuando se mide FEV0.5/FEV3/etc. */
-  bestFevA: number | null;
-  bestFevAOverBestFvc: number | null;
 }
 
 function avg(values: Array<number | null>): number | null {
@@ -277,7 +262,6 @@ function max(values: Array<number | null>): number | null {
 export function averageMetrics(list: SpiroMetrics[]): SpiroGroupAverage {
   const bestFev1 = max(list.map((m) => m.fev1));
   const bestFvc = max(list.map((m) => m.fvc));
-  const bestFevA = max(list.map((m) => m.fevA));
   const ratio = (num: number | null, den: number | null) =>
     num !== null && den !== null && den > 0 ? (num / den) * 100 : null;
   return {
@@ -286,21 +270,17 @@ export function averageMetrics(list: SpiroMetrics[]): SpiroGroupAverage {
     fvc: avg(list.map((m) => m.fvc)),
     fev1: avg(list.map((m) => m.fev1)),
     fev1OverFvc: avg(list.map((m) => m.fev1OverFvc)),
-    fevA: avg(list.map((m) => m.fevA)),
-    fevB: avg(list.map((m) => m.fevB)),
+    fev6: avg(list.map((m) => m.fev6)),
     fef25: avg(list.map((m) => m.fef25)),
     fef50: avg(list.map((m) => m.fef50)),
     fef75: avg(list.map((m) => m.fef75)),
     fef2575: avg(list.map((m) => m.fef2575)),
-    fevAOverFvc: avg(list.map((m) => m.fevAOverFvc)),
     fif25: avg(list.map((m) => m.fif25)),
     fif50: avg(list.map((m) => m.fif50)),
     fif75: avg(list.map((m) => m.fif75)),
     bestFev1,
     bestFvc,
     bestFev1OverBestFvc: ratio(bestFev1, bestFvc),
-    bestFevA,
-    bestFevAOverBestFvc: ratio(bestFevA, bestFvc),
   };
 }
 
